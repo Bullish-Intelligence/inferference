@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "written_utc": "2026-10-07T15:15:00+00:00",
+  "state": "completed",
+  "failure_boundary": null,
+  "detail": null,
+  "started_utc": "2026-10-07T15:00:00+00:00",
+  "ended_utc": "2026-10-07T15:15:00+00:00"
+}

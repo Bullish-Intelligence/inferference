@@ -1,0 +1,152 @@
+# bench.yml — the bench package's perf job.
+#
+# One serialized GPU job: build the integration p2fork lib, then run the
+# json_workload perf baseline through the ported runner (src/inferference/benchkit/
+# runners/json_workload.py). The runner enforces GPU-0-only isolation
+# (run_json_workload.py:35-43 preserved), writes records v1 + envelope v2 +
+# gpu snapshots under ci/.ci-artifacts/artifacts/project17-*, and exits non-zero
+# on any hard failure (fail-closed).
+#
+# torch sync is hard-required inside the runner.
+#
+# Deferred (explicit, per the Task-4 boundary): the full runner set (state
+# sweeps, prefix-cache sweeps, router runners, P2 throughput, soak leg), the
+# baseline-store regression gate in CI, and the envelope migration stamp for the
+# ~20 pre-existing reference artifact dirs.
+name: bench
+
+on:
+  push:
+    paths:
+      - "ci/build/**"
+      - "ci/runner/**"
+      - "ci/workflows/**"
+      - "bench/**"
+      - "src/inferference/**"
+      - "devenv.nix"
+      - "devenv.yaml"
+      - "devenv.lock"
+  workflow_dispatch:
+
+env:
+  CI_ARTIFACTS: ci/.ci-artifacts
+
+jobs:
+  bench:
+    runs-on: [self-hosted, cuda, rtx3060]
+    name: bench (json_workload / integration p2fork)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rig env
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source ci/runner/rig-env.sh
+
+      - name: Library venv
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          ci/runner/library-venv.sh
+
+      - name: BUILD (integration p2fork)
+        id: build
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          OUT=$(ci/build/build-llamacpp.sh --ref integration --profile p2fork 2>&1 \
+            | sed -n 's#^>> done. lib set in \(.*\)/lib$#\1#p' | tail -1)
+          test -n "$OUT"
+          echo "out=$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+
+      # ---- perf baseline (serialized, GPU 0) ---------------------------------
+      - name: BENCH (json_workload runner)
+        id: bench
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          mkdir -p "$CI_ARTIFACTS/artifacts"
+          export LLAMA_CPP_LIB_PATH="${{ steps.build.outputs.out }}/lib"
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LLAMA_CPP_LIB_PATH:$(dirname $(gcc -print-file-name=libstdc++.so)):$(dirname $(gcc -print-file-name=libgomp.so)):${LD_LIBRARY_PATH:-}"
+          ci/runner/gpu-serialized.sh ci/library/.venv/bin/python \
+            -m inferference.benchkit.runners.json_workload \
+            --model "$MODEL_DEFAULT" \
+            --requests 10 \
+            --artifacts "$CI_ARTIFACTS/artifacts/project17-json-workload"
+
+      # ---- P2 throughput (the shipped router, fork vs router vs sequential) ---
+      - name: BENCH (p2_throughput runner)
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          mkdir -p "$CI_ARTIFACTS/artifacts"
+          export LLAMA_CPP_LIB_PATH="${{ steps.build.outputs.out }}/lib"
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LLAMA_CPP_LIB_PATH:$(dirname $(gcc -print-file-name=libstdc++.so)):$(dirname $(gcc -print-file-name=libgomp.so)):${LD_LIBRARY_PATH:-}"
+          ci/runner/gpu-serialized.sh ci/library/.venv/bin/python \
+            -m inferference.benchkit.runners.p2_throughput \
+            --model "$MODEL_DEFAULT" \
+            --lora-a "$MODEL_PROBE_DIR/probe-a.gguf" \
+            --lora-b "$MODEL_PROBE_DIR/probe-b.gguf" \
+            --batch-sizes 2,4 \
+            --artifacts "$CI_ARTIFACTS/artifacts/project17-p2-throughput"
+
+      # ---- state-restore family (step-6 ports; serialized, GPU 0) ---------------
+      # Representantive cells of the state-restore runner set (the rest run
+      # on-demand via `-m inferference.benchkit.runners.<name>`): the whole-state
+      # prefix-cache break-even sweep and the in-context seq-state break-even +
+      # batched throughput. Each enforces its own fail-closed continuation gate.
+      - name: BENCH (prefix_cache_sweep runner)
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          mkdir -p "$CI_ARTIFACTS/artifacts"
+          export LLAMA_CPP_LIB_PATH="${{ steps.build.outputs.out }}/lib"
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LLAMA_CPP_LIB_PATH:$(dirname $(gcc -print-file-name=libstdc++.so)):$(dirname $(gcc -print-file-name=libgomp.so)):${LD_LIBRARY_PATH:-}"
+          ci/runner/gpu-serialized.sh ci/library/.venv/bin/python \
+            -m inferference.benchkit.runners.prefix_cache_sweep \
+            --model "$MODEL_DEFAULT" \
+            --cache-root "$HOME/.cache/inferference/prefix-cache-sweep" \
+            --prefix-lengths 16,32,64 --repetitions 2 \
+            --artifacts "$CI_ARTIFACTS/artifacts/project17-prefix-cache-sweep"
+
+      - name: BENCH (seq_batch_breakeven runner)
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          mkdir -p "$CI_ARTIFACTS/artifacts"
+          export LLAMA_CPP_LIB_PATH="${{ steps.build.outputs.out }}/lib"
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LLAMA_CPP_LIB_PATH:$(dirname $(gcc -print-file-name=libstdc++.so)):$(dirname $(gcc -print-file-name=libgomp.so)):${LD_LIBRARY_PATH:-}"
+          ci/runner/gpu-serialized.sh ci/library/.venv/bin/python \
+            -m inferference.benchkit.runners.seq_batch_breakeven \
+            --model "$MODEL_DEFAULT" \
+            --breakeven-lengths 16,32,64 --seq-counts 1,2,4 \
+            --gen-tokens 8 --repetitions 2 \
+            --artifacts "$CI_ARTIFACTS/artifacts/project17-seq-batch-breakeven"
+
+      - name: Record bench artifacts
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          RUN_DIR=$(ls -d "$CI_ARTIFACTS"/artifacts/project17-json-workload/project17-json-workload-* | tail -1)
+          cp "$RUN_DIR/summary.json" "$CI_ARTIFACTS/bench-json-workload-summary.json"
+          cp "$RUN_DIR/envelope.json" "$CI_ARTIFACTS/bench-json-workload-envelope.json"
+          cp "${{ steps.build.outputs.out }}/build-manifest.json" "$CI_ARTIFACTS/bench-json-workload-lib.json"
+          echo "bench summary:"
+          cat "$CI_ARTIFACTS/bench-json-workload-summary.json"
+
+      # ---- baseline regression gate ------------------------------------------------------------
+      # First run saves the baseline; later runs compare the p50 decode-tps aggregate
+      # vs the stored baseline (fingerprint-keyed) and fail only on a regression beyond
+      # the threshold. Perf deltas are reported, not failed (FP rule, 21-P2-THROUGHPUT).
+      - name: BASELINE gate (save/compare)
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          RUN_DIR=$(ls -d "$CI_ARTIFACTS"/artifacts/project17-json-workload/project17-json-workload-* | tail -1)
+          ci/library/.venv/bin/python -m inferference.benchkit.baseline_gate \
+            --run-dir "$RUN_DIR" \
+            --manifest "${{ steps.build.outputs.out }}/build-manifest.json" \
+            --artifacts "$BASELINES_ROOT" \
+            --save

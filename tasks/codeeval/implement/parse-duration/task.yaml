@@ -1,0 +1,20 @@
+id: implement/parse-duration
+family: implement
+version: 1
+language: python
+difficulty: 2
+origin: hand-written
+instruction: |
+  Implement parse_duration in duration.py. The docstring states the grammar and
+  every error case. Return the whole file.
+context:
+  files: [files/duration.py]
+output:
+  kind: full_file
+  path: files/duration.py
+grading:
+  parse: true
+  ruff: [E, F, I, UP]
+  pytest: [tests/test_duration.py]
+reference: reference/duration.py
+max_output_tokens: 900

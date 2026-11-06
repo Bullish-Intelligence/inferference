@@ -1,0 +1,21 @@
+id: debug/window-sum-off-by-one
+family: debug
+version: 1
+language: python
+difficulty: 2
+origin: hand-written
+instruction: |
+  test_windows.py fails. Find the defect in windows.py and fix it.
+  Return the corrected windows.py. Do not change the tests, and do not change
+  any public signature.
+context:
+  files: [files/windows.py, tests/test_windows.py]
+output:
+  kind: full_file
+  path: files/windows.py
+grading:
+  parse: true
+  ruff: [E, F, I]
+  pytest: [tests/test_windows.py]
+reference: reference/windows.py
+max_output_tokens: 900

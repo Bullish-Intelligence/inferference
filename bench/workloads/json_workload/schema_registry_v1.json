@@ -1,0 +1,17 @@
+{
+  "registry_version": "project17-schema-registry-v1",
+  "schemas": {
+    "document_fields": {"type":"object","additionalProperties":false,"required":["summary","reference"],"properties":{"summary":{"type":"string"},"reference":{"type":"string"}}},
+    "ticket_triage": {"type":"object","additionalProperties":false,"required":["priority","queue","summary"],"properties":{"priority":{"type":"string","enum":["low","normal","high","urgent"]},"queue":{"type":"string"},"summary":{"type":"string"}}},
+    "tool_selection": {"type":"object","additionalProperties":false,"required":["tool","argument"],"properties":{"tool":{"type":"string"},"argument":{"type":"string"}}},
+    "routing": {"type":"object","additionalProperties":false,"required":["destination","reason"],"properties":{"destination":{"type":"string"},"reason":{"type":"string"}}},
+    "calendar_event": {"type":"object","additionalProperties":false,"required":["title","start","timezone"],"properties":{"title":{"type":"string"},"start":{"type":"string"},"timezone":{"type":"string"}}},
+    "contact_address": {"type":"object","additionalProperties":false,"required":["name","address"],"properties":{"name":{"type":"string"},"address":{"type":"string"}}},
+    "invoice_order": {"type":"object","additionalProperties":false,"required":["reference","status","amount"],"properties":{"reference":{"type":"string"},"status":{"type":"string"},"amount":{"type":"number"}}},
+    "support_action": {"type":"object","additionalProperties":false,"required":["action","owner","reason"],"properties":{"action":{"type":"string"},"owner":{"type":"string"},"reason":{"type":"string"}}},
+    "moderation": {"type":"object","additionalProperties":false,"required":["label","reason"],"properties":{"label":{"type":"string","enum":["allow","review","block"]},"reason":{"type":"string"}}},
+    "product_attributes": {"type":"object","additionalProperties":false,"required":["product","category","attributes"],"properties":{"product":{"type":"string"},"category":{"type":"string"},"attributes":{"type":"string"}}},
+    "lead_qualification": {"type":"object","additionalProperties":false,"required":["tier","next_step","reason"],"properties":{"tier":{"type":"string","enum":["low","medium","high"]},"next_step":{"type":"string"},"reason":{"type":"string"}}},
+    "agent_handoff": {"type":"object","additionalProperties":false,"required":["summary","next_owner","next_action"],"properties":{"summary":{"type":"string"},"next_owner":{"type":"string"},"next_action":{"type":"string"}}}
+  }
+}

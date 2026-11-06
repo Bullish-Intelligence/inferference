@@ -1,0 +1,13 @@
+{
+  "suite": "nanbeige-arch",
+  "branch": "stock/nanbeige-arch",
+  "source": "stock",
+  "note": "fork branch feat/nanbeige-arch retired 2026-08-02 (anchor bump to b10233): upstream natively owns LLM_ARCH_NANBEIGE, the suite is now a STOCK-CAPABILITY drift detector — it must pass on any stock/integration build that still recognizes the arch, and would catch a future upstream arch change.",
+  "capability": {
+    "probe": "probes/capability.sh",
+    "required": true
+  },
+  "env": { "GPU": false, "MODEL": "Nanbeige4.2-3B-UD-Q4_K_XL.gguf", "LIB": true },
+  "tests": ["tests/test_nanbeige_arch.py"],
+  "skip_on_stock": false
+}

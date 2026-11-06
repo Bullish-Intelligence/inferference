@@ -1,0 +1,69 @@
+# The router-level config: which models are resident, and on which device.
+# Install as ~/.config/inferference/placement.yaml
+#
+# THIS FILE IS THE TRUTH. A reconcile brings the router to exactly this state and
+# overrides whatever is currently loaded — including anything done through the
+# router's own /models/load. Those endpoints stay enabled; they are operational
+# controls, not a source of truth.
+
+devices:
+  # `id` is how llama.cpp names the device (--device). `card` is the DRM index
+  # under /sys/class/drm/card<N>, which is how free VRAM is read.
+  - id: Vulkan0
+    card: 0
+    # Headroom left unallocated. A card driven to its last MiB spills into host
+    # memory instead of failing, so this is not decoration.
+    reserve_mib: 512
+  - id: Vulkan1
+    card: 1
+    reserve_mib: 512
+
+resident:
+  # DEVICE IS OPTIONAL. Omit it and the reconciler puts the model on the ONE
+  # card that fits, choosing the card with the least room that still holds it so
+  # a big model is not blocked by a small one. Models are placed largest first,
+  # so the result does not depend on the order you list them here.
+  #
+  # It will NEVER split a model across cards on its own. If no single card has
+  # room it REFUSES and tells you the sizes, because the tensor_split ratio is a
+  # decision about your hardware and splitting also costs about 10% of decode
+  # throughput (007). Spanning cards is opt-in, below.
+  - model: auto-placed
+
+  # One model on one card, chosen by hand. An explicit placement is never
+  # second-guessed, and it is charged FIRST so automatic ones work around it.
+  - model: small
+    device: Vulkan1
+
+  # Several models may share a card; each is its own child process.
+  - model: another-small
+    device: Vulkan1
+
+  # One model may span cards. This is always DELIBERATE — see above.
+  # tensor_split weights the layers, and the budget is charged to each device in
+  # the same proportion. A tensor_split without an explicit device list is
+  # refused: a split cannot ride on automatic placement.
+  - model: big
+    device: [Vulkan0, Vulkan1]
+    tensor_split: [50, 50]
+
+# HOW THE ROUTER ITSELF WAS LAUNCHED.
+#
+# --models-max is the one router flag the reconciler must know, and it cannot be
+# read back reliably: it is only visible on a RUNNING child's argv, so on an
+# empty router it is unknowable. Below the resident count, an explicit load
+# returns success and SILENTLY evicts the least recently used model — a declared
+# model goes down with no error to the caller.
+#
+# So declare it here, and launch the router with the same number. The reconciler
+# cross-checks the declaration against any child it can see and refuses on a
+# disagreement, because a router that does not match this file is not the router
+# this file describes.
+#
+# host/port are read by ci/runner/inferference-router-launch.sh to start the
+# router, and by inferference-reconcile.py as its default --router target — one
+# file, so a port is never agreed on by coincidence between the two.
+router:
+  host: 127.0.0.1
+  port: 8100
+  models_max: 4     # 0 = unlimited

@@ -1,0 +1,78 @@
+# inferference-router.service — the llama.cpp router on the llama-infernal fork.
+#
+# TEMPLATE, AND NOT THE SHIPPED UNIT. nix/nixos-module.nix generates the unit
+# this machine runs; keep the two in step. Substitute @REPO_DIR@ to install this
+# file by hand. See ci/runner/inferference-router-launch.sh and
+# the router spike's findings.
+#
+# ONE INSTANCE, TOTAL — not one per role, not one per card. This is the
+# replacement for the retired inferference-server@<role>.service /
+# inferference-gpu.target pair: "THIS LIBRARY OWNS ALL LLM SERVING. There is no
+# other server." (AGENTS.md). Every model this machine serves is a child the
+# router spawns from the preset INI generated at start from
+# ~/.config/inferference/placement.yaml + models/*.yaml.
+#
+#   systemctl --user start inferference-router
+#
+# Which cards a model lands on, and how many models are resident, is entirely a
+# YAML decision (placement.yaml's `device:` per model) — never a unit
+# parameter, and never a literal device index anywhere in this file.
+#
+# THIS UNIT TAKES NO GPU LEASE. It is the long-lived owner of every card its
+# placement names; there is nothing to preempt it in favour of.
+# ci/runner/gpu-lease.sh still governs build/gate jobs, and a lease that finds
+# no room because the router is resident on a card is not a bug.
+
+[Unit]
+Description=inferference — llama.cpp router (all resident models)
+Documentation=file://@REPO_DIR@/AGENTS.md
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=exec
+
+# --- runtime configuration is YAML, and ONLY YAML ----------------------------
+# %h/.config/inferference/{placement.yaml,models/*.yaml}, resolved at start by
+# ci/runner/inferference-router-launch.sh via ci/runner/inferference-reconcile.py.
+# Schemas: ci/runner/placement.example.yaml, ci/runner/model.example.yaml.
+#
+# This line says WHERE the config is, never what is in it — same rule the
+# retired per-role unit followed for its own YAML.
+Environment=INFERFERENCE_CONFIG_DIR=%h/.config/inferference
+
+# The launcher renders the preset INI, resolves the artefact and the loader
+# path, and refuses with EX_CONFIG (78) on any missing fact — before any model
+# is touched. --check does the same resolution without starting the router.
+ExecStartPre=@REPO_DIR@/ci/runner/inferference-router-launch.sh --check
+ExecStart=@REPO_DIR@/ci/runner/inferference-router-launch.sh
+
+Restart=on-failure
+# A thermal kill (the router sat at 90 C while paused) and a failed safety
+# check are operator actions, not crashes. A pause at 85 C is not an exit.
+RestartPreventExitStatus=75 76
+RestartSec=5
+# Startup loads every resident model (load-on-startup=true in the rendered
+# preset); a wide resident set is slow. Do not let systemd kill a healthy start.
+TimeoutStartSec=300
+# A stop must reach the llama-server processes EXACTLY ONCE. The default
+# KillMode=control-group broadcasts KillSignal to the whole cgroup, the
+# guard (MainPID) dies at once because it traps nothing, and systemd then
+# re-broadcasts KillSignal in final-sigterm. Two SIGINTs about 1.5 ms apart
+# make llama-server call exit() from its signal handler, which deadlocked 4
+# of 38 stops. KillMode=mixed
+# signals only the main process; gpu-thermal-guard.sh relays one signal into
+# the process group it owns. The relay is REQUIRED: mixed without it leaves
+# the router unsignalled and SIGKILLed.
+KillMode=mixed
+# The longest clean stop measured is 13.54 s. 90 s is headroom for a wide
+# resident set, not a workaround for the defect above.
+TimeoutStopSec=90
+KillSignal=SIGINT
+
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectHome=false
+
+[Install]
+WantedBy=default.target

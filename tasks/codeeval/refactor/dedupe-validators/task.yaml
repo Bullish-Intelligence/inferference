@@ -1,0 +1,22 @@
+id: refactor/dedupe-validators
+family: refactor
+version: 1
+language: python
+difficulty: 2
+origin: hand-written
+instruction: |
+  validators.py repeats the same range-checking logic four times. Refactor it so
+  the shared logic lives in ONE helper and each public function delegates to it.
+  Every public name and its behaviour, including the exact exception messages,
+  must stay exactly as they are. Return the whole file.
+context:
+  files: [files/validators.py]
+output:
+  kind: full_file
+  path: files/validators.py
+grading:
+  parse: true
+  ruff: [E, F, I, UP]
+  pytest: [tests/test_validators.py]
+reference: reference/validators.py
+max_output_tokens: 900

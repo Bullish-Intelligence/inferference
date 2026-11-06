@@ -1,0 +1,5 @@
+{
+  "llama_cpp_python": { "repo": "https://github.com/abetlen/llama-cpp-python", "ref": "v0.3.34", "commit": "629bd1b333f60d24a01886c5f99019f4c7c3ea6c" },
+  "llama_cpp":        { "repo": "https://github.com/Bullish-Design/llama-infernal", "ref": "integration", "commit": "ecc0cb0d34e17595ff0546b89c44fa100d076c0d" },
+  "llama_cpp_anchor": "0ab9d6fed"
+}

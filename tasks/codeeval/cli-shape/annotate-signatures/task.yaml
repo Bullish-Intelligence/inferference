@@ -1,0 +1,22 @@
+id: cli-shape/annotate-signatures
+family: cli-shape
+version: 1
+language: python
+difficulty: 1
+origin: hand-written
+instruction: |
+  Add complete type annotations to every function in stats.py, including the
+  return types. Use modern built-in generics (list[int], not List[int]) and
+  add "from __future__ import annotations" if it helps. Change nothing else:
+  no renames, no reordering, no behaviour change. Return the whole file.
+context:
+  files: [files/stats.py]
+output:
+  kind: full_file
+  path: files/stats.py
+grading:
+  parse: true
+  ruff: [E, F, I, UP, ANN]
+  pytest: [tests/test_stats.py]
+reference: reference/stats.py
+max_output_tokens: 800

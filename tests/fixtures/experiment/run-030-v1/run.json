@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "experiment": "fixture-experiment",
+  "condition": "fixture-experiment-lanes-4-deadbeefcafe",
+  "factor_name": "lanes",
+  "factor_value": "4",
+  "fixed_digest": "deadbeefcafefeed0000000000000000000000000000000000000000000000",
+  "replicate": 1,
+  "spec_sha256": "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123ab"
+}

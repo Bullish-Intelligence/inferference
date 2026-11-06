@@ -1,0 +1,201 @@
+[project]
+name = "inferference"
+version = "0.3.0"
+description = "The llama.cpp teaching core: owned decode, continuous batching, multi-LoRA routing, grammar-constrained decoding, and prefix-cache / context-tree state."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+
+authors = [
+  { name = "Bullish-Intelligence", email = "242310653+Bullish-Intelligence@users.noreply.github.com" },
+]
+
+# Minimal justified dependency set:
+#   * pydantic — boundary models only (models.py, fingerprint.py, diagnostics.py,
+#     router.py, batching.py); never on the decode hot path.
+#   * numpy — the hot path passes numpy views of llama.cpp logits (router.py,
+#     decode.py, grammar.py, prefix_cache_live.py).
+#   * xgrammar==0.2.1 — grammar-constrained decoding (grammar.py, router.py);
+#     ABI-sensitive native pin, versioned like the llama.cpp anchor.
+#   * llama-cpp-python==0.3.34 — the binding half of the ABI-anchor pair
+#     (decode.py wraps it); the lib half comes from LLAMA_CPP_LIB_PATH (Mode B
+#     iteration) or the Mode A wheel (release).
+# The app stack (dbos / transformers) is NOT a dependency of this library.
+#
+# INSTALL SPLIT. The core install is pure Python: it carries the
+# upward contract (capabilities.py, client.py), the boundary models and the
+# placement/config readers. The ABI-anchored native stack moved to the
+# `runtime` extra, so a CONSUMER of the contract installs `inferference`
+# without inheriting the anchor pair. That
+# matters twice over: the consumer holds no card and must never load a model,
+# and `llama-cpp-python` resolved from PyPI is a STOCK build, which is exactly
+# the ABI-incompatible runtime the anchor rule exists to prevent.
+#
+# Serving and decode need `inferference[runtime]`. The verification venv is
+# unaffected: `ci/runner/library-venv.sh` installs every native package by name
+# and then the repo with `--no-deps`.
+dependencies = [
+  "pydantic>=2",
+  # The reconciler reads the model + placement YAML directly.
+  "pyyaml>=6",
+  # The contract client, and codeeval's streamed OpenAI-compatible calls.
+  "httpx>=0.27",
+]
+
+# Developer tools; Testee uses the pinned library venv.
+[dependency-groups]
+dev = ["pytest", "ruff", "ty==0.0.65"]
+
+[project.optional-dependencies]
+# The decode path: everything that touches llama.cpp memory or the tokenizer.
+runtime = [
+  "numpy>=2",
+  "xgrammar==0.2.1",
+  "llama-cpp-python==0.3.34",
+]
+
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/inferference"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"bench/workloads" = "inferference/benchkit/workloads"
+
+# The sdist ships the same source-only surface as the wheel — never the build
+# garage (ci/build/.llamacpp-builds), venvs, or the jj/git metadata that hatch
+# would otherwise sweep in (mirrors the reference's sdist include).
+[tool.hatch.build.targets.sdist]
+include = ["src", "bench", "README.md", "LICENSE", "pyproject.toml"]
+exclude = ["ci/build/.llamacpp-builds/**"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+src = ["src"]
+# The codeeval corpus is DATA, not code. Some of its files are defective on
+# purpose — an unfinished function, an off-by-one — because that defect is the
+# task. Linting them would fail the repo for doing its job. Generated answers
+# are linted separately, with `ruff --isolated` and the rules the task declares.
+extend-exclude = ["tasks/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+# `runtime` marks a test that imports the native stack (llama-cpp-python, xgrammar). The required gate
+# runs `-m "not runtime"`; `opt:runtime` runs every test in the full library venv.
+markers = ["runtime: needs the native runtime (llama-cpp-python, xgrammar); runs in opt:runtime"]
+# `src` makes `inferference` importable; `.` (repo root) makes `tests` a top-level
+# namespace/package so the ported cross-test import `from tests.test_node_delta
+# import FakeTreeBridge` (test_lsp_tree.py) resolves exactly as it did in the
+# reference.
+pythonpath = ["src", "."]
+
+# --- ty (type checker, run by testee) -----------------------------------------
+# The library and its tests are a byte-semantic port of an earlier internal
+# codebase, which did not run a strict ty gate over llama_core. Under ty 0.0.65 (the version testee resolves from the library
+# venv) a handful of reference-inherited patterns surface strictness findings:
+#   * native-boundary calls where the llama_cpp type stubs are narrower than
+#     runtime (Llama(seed=int|None), Field(ge=0) over Optional[int]);
+#   * runtime-asserted union narrowing (ChainDecision/LiveRestoreResult),
+#     guarded by `assert decision.plan is not None` / explicit `isinstance`;
+#   * test fakes that assign MethodType / subscript `object` (the reference's
+#     own tests carry the same pattern, with ty-era `type: ignore` codes that
+#     no longer match ty 0.0.65).
+# These are scoped to the exact files+rules, mirroring how the reference itself
+# scopes its app modules (pyproject.toml [[tool.ty.overrides]]); the rest of the
+# tree stays strictly checked.
+[tool.ty.environment]
+python-version = "3.13"
+
+# The native runtime (llama-cpp-python, xgrammar) and the transformers stack are not in the
+# locked core environment that the required gate uses. The `runtime` extra and
+# `ci/runner/library-venv.sh` provide them; `opt:runtime` runs the whole suite there. These four
+# modules may stay unresolved. Every other unresolved import still fails the check.
+[tool.ty.analysis]
+allowed-unresolved-imports = ["llama_cpp", "llama_cpp.**", "xgrammar", "xgrammar.**", "transformers", "transformers.**", "huggingface_hub", "huggingface_hub.**"]
+
+[tool.ty.src]
+# The codeeval corpus is DATA. Its files are deliberately unfinished or wrong,
+# and its modules are imported as `files.<name>` only inside the grading
+# sandbox, so type-checking them here reports the task, not a defect.
+exclude = ["tasks/"]
+
+[[tool.ty.overrides]]
+include = [
+  "src/inferference/batching.py",
+  "src/inferference/decode.py",
+  "src/inferference/fingerprint.py",
+  "src/inferference/router.py",
+]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"
+unsupported-operator = "ignore"
+unresolved-attribute = "ignore"
+
+[[tool.ty.overrides]]
+include = [
+  "tests/test_llama_core_middleware.py",
+  "tests/test_llama_core_models.py",
+  "tests/test_llama_core_router.py",
+  "tests/test_lsp_tree.py",
+  "tests/test_node_delta.py",
+  "tests/test_owned_decode.py",
+]
+
+[tool.ty.overrides.rules]
+invalid-assignment = "ignore"
+invalid-argument-type = "ignore"
+unresolved-attribute = "ignore"
+call-non-callable = "ignore"
+unknown-argument = "ignore"
+
+# The per-branch suite tests are fake-heavy the same way (port of the reference's
+# test_seq_routing*.py + the gate tests): the same scoped rules apply.
+[[tool.ty.overrides]]
+include = ["suites/**/tests/*.py"]
+
+[tool.ty.overrides.rules]
+invalid-assignment = "ignore"
+invalid-argument-type = "ignore"
+
+# The bench harness (never shipped) — the dynamic ``create_model`` gate helper is
+# ported verbatim from the reference's soak_grammar.py, which the reference itself
+# does not ty-gate (its overrides scope its app modules the same way).
+[[tool.ty.overrides]]
+include = ["src/inferference/benchkit/gates.py"]
+
+[tool.ty.overrides.rules]
+no-matching-overload = "ignore"
+
+# The hats/step-5 canary scripts: synth_nanbeige_lora.py imports gguf-py via a
+# runtime sys.path insert (the vendored llama.cpp tree, not an installed
+# package) and hats-validate.py's embedded decode blocks are opaque strings —
+# neither is resolvable by ty; the same dynamic-import class as the bench gate
+# helpers the reference does not ty-gate.
+[[tool.ty.overrides]]
+include = ["ci/canary/synth_nanbeige_lora.py", "ci/canary/hats-validate.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+unresolved-attribute = "ignore"
+invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+
+# The bench perf runners pass runtime backend strings ("seq_routed" /
+# "context_pool") into the Literal-typed RouterConfig — the same non-shipped
+# harness class as gates.py, scoped the same way.
+[[tool.ty.overrides]]
+include = ["src/inferference/benchkit/runners/*.py"]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+unresolved-attribute = "ignore"
+unknown-argument = "ignore"

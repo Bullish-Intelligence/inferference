@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "written_utc": "2026-10-07T15:00:00+00:00",
+  "experiment": "fixture-experiment",
+  "spec_sha256": "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123ab",
+  "fixed": {
+    "model": {"name": "model.gguf"}
+  },
+  "factor": {"name": "lanes", "value": "4"},
+  "workloads": ["prefill_2048", "soak_300s"],
+  "replication": {"n": 1, "order": "counterbalanced"},
+  "endpoints": {"band_c": [60.0, 80.0]}
+}

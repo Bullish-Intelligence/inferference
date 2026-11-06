@@ -1,0 +1,18 @@
+id: structured/api-surface
+family: structured
+version: 1
+language: python
+difficulty: 2
+origin: hand-written
+instruction: |
+  Read lease.py and describe its public API as one JSON object matching the
+  schema. Include every public function and class (a leading underscore means
+  private). Order the entries as they appear in the file.
+context:
+  files: [files/lease.py]
+output:
+  kind: json
+  schema_file: files/schema.json
+grading:
+  parse: true
+max_output_tokens: 900

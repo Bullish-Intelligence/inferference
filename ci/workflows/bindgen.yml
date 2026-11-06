@@ -1,0 +1,118 @@
+# bindgen.yml — BUILD → BINDGEN → SMOKE, the ABI-drift tripwire (pinned matrix).
+# Port of the draft's stage graph (ci/llama-cpp-bindgen.yml), adapted to this
+# repo:
+#   * BUILD via ci/build/build-llamacpp.sh — emits <out>/include + <out>/lib
+#     (the draft's obsolete `cp -a …/include` step is dropped: our script
+#     already emits include/).
+#   * BINDGEN = ci/gates/cffi_bindgen.py --build-dir <out> --profile <p> --check.
+#     **Bindgen failure == ABI drift == hard fail. There is NO continue-on-error
+#     on this pinned matrix** — a compile failure is the tripwire, never a TODO.
+#   * SMOKE = the real ci/gates/abi_smoke_gate.py (GPU 0, $MODEL_DEFAULT,
+#     flock-serialized). Only the p2fork (GPU) cells run SMOKE: the behavioral
+#     proof is a GPU-rig property; cpu-light cells run BUILD + BINDGEN (the ABI
+#     tripwire is the point of a cpu-light leg). This replaces the draft's TODO
+#     SMOKE placeholder with the real gate.
+#   * Record version tuple per cell (draft's "Record version tuple").
+name: bindgen
+
+on:
+  push:
+    paths:
+      - "ci/build/**"
+      - "ci/gates/**"
+      - "ci/workflows/**"
+      - "ci/runner/**"
+      - "devenv.nix"
+      - "devenv.yaml"
+      - "devenv.lock"
+  workflow_dispatch:
+  pull_request:
+
+env:
+  CI_ARTIFACTS: ci/.ci-artifacts
+
+# Every cell builds `integration`:
+# it carries every fix, so a tripwire on any other branch measured a tree
+# nothing ships. p2fork-server is here because the routed server links the same
+# libllama and must clear the same ABI anchor.
+jobs:
+  bindgen:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ref: integration
+            profile: cpu-light
+            runner: [self-hosted, cpu]
+          - ref: integration
+            profile: p2fork
+            runner: [self-hosted, cuda, rtx3060]
+          - ref: integration
+            profile: p2fork-server
+            runner: [self-hosted, cuda, rtx3060]
+    runs-on: ${{ matrix.runner }}
+    name: bindgen (${{ matrix.ref }} / ${{ matrix.profile }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rig env
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source ci/runner/rig-env.sh
+
+      - name: Gate venv
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          ci/runner/gate-venv.sh
+
+      - name: BUILD (build-llamacpp.sh)
+        id: build
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          OUT=$(ci/build/build-llamacpp.sh --ref "${{ matrix.ref }}" --profile "${{ matrix.profile }}" 2>&1 \
+            | sed -n 's#^>> done. lib set in \(.*\)/lib$#\1#p' | tail -1)
+          test -n "$OUT"
+          echo "out=$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+
+      # ---- BINDGEN — THE ABI-DRIFT GATE ---------------------------------------
+      # A non-zero exit here means the cdef no longer matches this llama.h /
+      # libllama.so: the compile failure IS the ABI-drift signal. Do NOT add
+      # continue-on-error to this step in the pinned matrix.
+      - name: BINDGEN (cffi_bindgen.py --check) — ABI drift signal
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          ci/gates/.venv/bin/python ci/gates/cffi_bindgen.py \
+            --build-dir "${{ steps.build.outputs.out }}" \
+            --profile "${{ matrix.profile }}" \
+            --check
+
+      # ---- SMOKE (real gate; GPU cells only) ----------------------------------
+      # Pins GPU 0 and serializes on the rig GPU lock so concurrent Act jobs
+      # never contend on the two 3060s. Runs the fork lib on LLAMA_CPP_LIB_PATH
+      # against $MODEL_DEFAULT: surface probe + ~32 greedy tokens + tokenizer
+      # round-trip. Exit 0 iff all pass.
+      - name: SMOKE (abi_smoke_gate.py — GPU 0, serialized)
+        if: matrix.profile == 'p2fork'
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          export LLAMA_CPP_LIB_PATH="${{ steps.build.outputs.out }}/lib"
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LLAMA_CPP_LIB_PATH:$(dirname $(gcc -print-file-name=libstdc++.so)):$(dirname $(gcc -print-file-name=libgomp.so))"
+          ci/runner/gpu-serialized.sh ci/gates/.venv/bin/python ci/gates/abi_smoke_gate.py \
+            --model "$MODEL_DEFAULT"
+
+      - name: Record version tuple
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          mkdir -p "$CI_ARTIFACTS"
+          OUT="${{ steps.build.outputs.out }}"
+          REFSAFE=$(printf '%s' "${{ matrix.ref }}" | tr '/' '_')
+          cp "$OUT/build-manifest.json" "$CI_ARTIFACTS/bindgen-${REFSAFE}-${{ matrix.profile }}.json"
+          echo "version tuple (${{ matrix.ref }} / ${{ matrix.profile }}):"
+          cat "$CI_ARTIFACTS/bindgen-${REFSAFE}-${{ matrix.profile }}.json"

@@ -1,0 +1,84 @@
+# build.yml — build the llama.cpp fork libs on the rig (matrix ref × profile).
+# GitHub-Actions format, executed locally by Act.
+#
+# Matrix cells:
+#   * cpu-light on any runner (runs on the rig host; Act maps all labels to host)
+#   * p2fork on the rig — CUDA sm_86 for the 3060s, pinned matrix (no
+#     continue-on-error anywhere in this file: a build that cannot compile is
+#     a hard failure).
+#   * p2fork-server on the rig — the routed llama-server. The routing suite
+#     needs the binary, not only the lib.
+#
+# Every cell builds `integration`.
+# The P2 feature branches stay on origin as history for the SHAs 12-16 cite,
+# but nothing is built or gated from them: integration now carries every fix,
+# and eight build targets is what let the suite drift off the shipped tree.
+# Each cell: rig env → BUILD (ci/build/build-llamacpp.sh) → record the version
+# tuple (build-manifest.json) under ci/.ci-artifacts/.
+#
+# The out dir is captured from the build script's own ">> done. lib set in"
+# line (the dir name embeds the resolved ref sha, not the branch name).
+name: build
+
+on:
+  push:
+    paths:
+      - "ci/build/**"
+      - "ci/workflows/**"
+      - "ci/runner/**"
+      - "devenv.nix"
+      - "devenv.yaml"
+      - "devenv.lock"
+  workflow_dispatch:
+  pull_request:
+
+env:
+  CI_ARTIFACTS: ci/.ci-artifacts
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ref: integration
+            profile: cpu-light
+            runner: [self-hosted, cpu]
+          - ref: integration
+            profile: p2fork
+            runner: [self-hosted, cuda, rtx3060]
+          - ref: integration
+            profile: p2fork-server
+            runner: [self-hosted, cuda, rtx3060]
+    runs-on: ${{ matrix.runner }}
+    name: build (${{ matrix.ref }} / ${{ matrix.profile }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rig env
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source ci/runner/rig-env.sh
+
+      - name: BUILD (build-llamacpp.sh)
+        id: build
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          OUT=$(ci/build/build-llamacpp.sh --ref "${{ matrix.ref }}" --profile "${{ matrix.profile }}" 2>&1 \
+            | sed -n 's#^>> done. lib set in \(.*\)/lib$#\1#p' | tail -1)
+          test -n "$OUT"
+          echo "out=$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Record version tuple
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          mkdir -p "$CI_ARTIFACTS"
+          OUT="${{ steps.build.outputs.out }}"
+          REFSAFE=$(printf '%s' "${{ matrix.ref }}" | tr '/' '_')
+          cp "$OUT/build-manifest.json" "$CI_ARTIFACTS/build-${REFSAFE}-${{ matrix.profile }}.json"
+          echo "version tuple (${{ matrix.ref }} / ${{ matrix.profile }}):"
+          cat "$CI_ARTIFACTS/build-${REFSAFE}-${{ matrix.profile }}.json"

@@ -1,0 +1,54 @@
+# One model. Install as ~/.config/inferference/models/<name>.yaml
+# The file name is the model's name: it becomes the INI section, the value of a
+# request's "model" field, and how the placement refers to it.
+
+model: /abs/path/to/some-model-Q4_K_M.gguf
+
+# PER-LANE context, not the total. llama.cpp's --ctx-size is the TOTAL cache and
+# n_ctx_slot = ctx-size / parallel, so the reconciler computes
+# ctx-size = ctx_per_lane * lanes for you. Declare what each request should get.
+ctx_per_lane: 4096
+
+# Concurrent request lanes (llama.cpp --parallel). Each lane costs its own KV on
+# BOTH architectures measured here — the model weights are shared, the cache is
+# not. Raising this is a VRAM decision, not a free one.
+lanes: 1
+
+# Always explicit. An unset n-gpu-layers lets llama.cpp's -fit quietly reduce
+# offload to make a model fit, which is a silent CPU fallback.
+ngl: 999
+
+# loras:
+#   - /abs/path/to/adapter.gguf
+
+# Anything else to pass to this model's child server, verbatim.
+# extra_args:
+#   flash-attn: "on"
+
+# MEASURED VRAM COST. Not optional, and never guessed.
+#
+# Produce this block with:
+#     ci/runner/measure-footprint.sh --model <gguf> --device VulkanN --card N \
+#                                    --ctx-per-lane 4096
+#
+#     total = base_mib + lanes * per_lane_mib
+#
+# base_mib is what does not scale with lanes (weights, compute buffer, fixed
+# overhead). per_lane_mib is the marginal cost of one lane (KV plus per-slot
+# overhead).
+#
+# MEASURED FROM SYSFS, NOT FROM THE SERVER LOG. Summing llama.cpp's reported
+# model/KV/compute buffer sizes understates what the card actually commits, by an
+# amount that GROWS PER LANE (+67 MiB at 1 lane, +259 at 4 on a 12B here).
+# Budgeting from the log said a 16-lane placement would fit; it did not, and it
+# spilled into host RAM at about 1/14th the speed while reporting success.
+#
+# The numbers belong to ONE (model, quant, ctx_per_lane). Change ctx_per_lane and
+# the reconciler REFUSES rather than extrapolating, because KV scaling is
+# per-architecture: a dense model's KV is linear in context, a sliding-window
+# model's is flat above its window, and KV does not track parameter count at all.
+footprint:
+  ctx_per_lane: 4096
+  base_mib: 2317.7
+  per_lane_mib: 704.3
+  measured_by: sysfs-vram-delta

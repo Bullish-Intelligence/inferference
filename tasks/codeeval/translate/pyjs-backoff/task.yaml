@@ -1,0 +1,18 @@
+id: translate/pyjs-backoff
+family: translate
+version: 1
+language: javascript
+difficulty: 2
+origin: hand-written
+instruction: |
+  Port backoff.py to modern JavaScript (ES2022, ESM). Keep the same function
+  names, the same argument order and the same behaviour, including the error
+  raised when max_attempts is not positive. Export every public function.
+context:
+  files: [files/backoff.py]
+output:
+  kind: full_file
+  path: backoff.mjs
+grading:
+  parse: false
+max_output_tokens: 900

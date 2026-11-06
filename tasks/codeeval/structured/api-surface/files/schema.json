@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "module",
+    "symbols"
+  ],
+  "properties": {
+    "module": {
+      "type": "string"
+    },
+    "symbols": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "kind",
+          "summary"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "function",
+              "class",
+              "exception"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "returns": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

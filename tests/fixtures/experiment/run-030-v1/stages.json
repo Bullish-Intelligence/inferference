@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "written_utc": "2026-10-07T15:10:00+00:00",
+  "start_gate": {
+    "started_utc": "2026-10-07T15:00:00+00:00",
+    "started_mono": 0.0,
+    "passed_mono": 2.0,
+    "max_c": 24,
+    "tolerance_c": 1,
+    "hold_s": 30,
+    "passed": true
+  },
+  "stages": [
+    {
+      "name": "soak_300s",
+      "workload": "soak_300s",
+      "concurrency": 1,
+      "started_utc": "2026-10-07T15:00:02+00:00",
+      "started_mono": 2.0,
+      "ended_utc": "2026-10-07T15:05:02+00:00",
+      "ended_mono": 302.0,
+      "completed": true,
+      "stop_reason": null,
+      "requests": [
+        {
+          "request_id": "soak_300s-l0-s0",
+          "lane": 0,
+          "seq": 0,
+          "payload_sha256": "f00df00df00df00df00df00df00df00df00df00df00df00df00df00df00df0",
+          "response_sha256": "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbe",
+          "dispatch_utc": "2026-10-07T15:00:02+00:00",
+          "dispatch_mono": 2.0,
+          "first_token_mono": 2.1,
+          "end_mono": 3.0,
+          "http_status": 200,
+          "prompt_tokens": 10,
+          "completion_tokens": 20,
+          "finish_reason": "stop",
+          "valid": true,
+          "validation_error": null,
+          "server_timings": {
+            "prompt_n": 10,
+            "prompt_ms": 50.0,
+            "predicted_n": 20,
+            "predicted_ms": 400.0,
+            "cache_n": 0
+          }
+        }
+      ]
+    }
+  ]
+}

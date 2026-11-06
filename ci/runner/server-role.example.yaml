@@ -1,0 +1,75 @@
+# Example runtime config for ONE server role. Role names are yours.
+#
+# Install as ~/.config/inferference/<role>.yaml — one file per role. The unit
+# reads it AT START, so changing a model or a pool is an edit plus
+# `systemctl --user restart inferference-server@<role>`, never a NixOS rebuild.
+# That is why these values are here and not in nix/nixos-module.nix.
+#
+# The CARD is not set here and cannot be. Each role takes its card from that
+# role's variable, $LLAMA_GPU_<ROLE>, declared in the machine-local
+# ci/runner/rig-local.sh — the repo's standing rule is to assert the role
+# variable, never a literal index.
+#
+# THIS FILE IS THE ONLY RUNTIME CONFIGURATION MECHANISM. No environment
+# variable overrides any key below. An earlier revision let INFERFERENCE_PORT,
+# INFERFERENCE_MODEL and friends override the YAML from the unit's
+# EnvironmentFile; that path is removed. Two mechanisms let a server run a port
+# one file names and another does not, with neither file showing which won.
+#
+# Every key below is optional except `port`. An unknown key is refused, not
+# ignored: a typo that is silently dropped leaves a server running a
+# configuration nobody wrote.
+
+# REQUIRED, no default. Two roles on one host must be given distinct ports by
+# you, not agree by coincidence. Point any consumer's base URL at this same
+# value rather than at a second, independently chosen one.
+port: 8081
+
+# Defaults to this role's $MODEL_<ROLE>, declared in ci/runner/rig-local.sh, so
+# it can usually be left out. Set it only to override that inventory.
+# model: /abs/path/to/some-model-Q4_K_M.gguf
+
+host: 127.0.0.1
+ctx: 16384
+parallel: 8
+ngl: 999          # GPU layers; 999 = offload everything
+
+# --- adapters ----------------------------------------------------------------
+# Either form, freely mixed. A path that does not exist is a REFUSAL, not a
+# warning: a server that starts without an adapter it was told to load answers
+# with the wrong weights and no error anywhere.
+#
+# loras:
+#   - /abs/path/to/adapter-0.gguf
+#   - path: /abs/path/to/adapter-1.gguf
+#     scale: 1.0
+
+# --- per-sequence LoRA routing ------------------------------------------------
+# OFF by default, and that is a measured decision, not caution.
+#
+# Routing lets ONE decode step serve several sequences that name DIFFERENT
+# adapters. Stock llama.cpp cannot: it batches only requests whose adapter sets
+# are equal, so K distinct adapters cost it K passes.
+#
+#   mixed traffic      1.6x - 2.0x faster than stock
+#   single-adapter     0.96x at 8 slots, 0.91x at 16, 0.89x at 32
+#
+# Each token carries its own mask, so the cost is paid whether or not the
+# traffic is mixed, and it grows with batch width. Turn this on only if requests
+# in flight really do name different adapters.
+#
+# Setting `routing: true` also forces `--cache-ram 0`, because the prompt cache
+# is keyed on prompt tokens alone and would serve one adapter's KV to another
+# adapter's request (R-4; the underlying defect R9 is live in stock too).
+routing: false
+
+# Anything else to pass through, verbatim.
+# extra_args: ["--verbose"]
+
+# --- VRAM, so a pool size is chosen and not guessed -------------------
+# Measure your own card and model; these are the figures from one rig, kept only
+# as an order of magnitude:
+#   usable per card        11916 MiB on a 12 GiB card (measured, not nameplate)
+#   a routed ~9B server     6330 MiB + 59.3 MiB x pool
+#   a routed ~3B server     5307 MiB + 54.4 MiB x pool
+# The server logs its own headroom and pool cap on every start.

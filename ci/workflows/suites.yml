@@ -1,0 +1,164 @@
+# suites.yml — per-branch capability suites × {stock build, integration build}
+#.
+#
+# Every fork branch's suite runs against BOTH build classes:
+#   * integration — the merged fork build (what ships)
+#   * stock — upstream master (cpu-light, `--repo` override → dedicated
+#     src-llama.cpp checkout)
+# The suite's capability probe decides run/skip per cell (ci/runner/run-suite.sh,
+# fail-closed per suite.json): a missing capability on a fork build is a FAIL
+# (merge block); on a stock build it is a SKIP when skip_on_stock, else a FAIL
+# (the drift detector — a suite whose probe fails on stock means upstream moved).
+#
+#   * GPU cells (p2-mixed-batch-lora × integration) run on
+#     [self-hosted, cuda, rtx3060], flock-serialized, GPU 0 pinned.
+#   * Validation gates are hard-fail: NO continue-on-error on this pinned matrix.
+#   * The nanbeige suite is CPU-only (the arch gate loads with n_gpu_layers=0)
+#     and must pass on STOCK too (upstream adopted the arch — canary finding).
+name: suites
+
+on:
+  push:
+    paths:
+      - "ci/build/**"
+      - "ci/runner/**"
+      - "ci/workflows/**"
+      - "ci/gates/**"
+      - "suites/**"
+      - "src/inferference/**"
+      - "devenv.nix"
+      - "devenv.yaml"
+      - "devenv.lock"
+  workflow_dispatch:
+  pull_request:
+
+env:
+  CI_ARTIFACTS: ci/.ci-artifacts
+
+jobs:
+  suites:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: p2-mixed-batch-lora
+            ref: integration
+            profile: p2fork
+            runner: [self-hosted, cuda, rtx3060]
+            gpu: true
+          - suite: p2-mixed-batch-lora
+            ref: master
+            profile: cpu-light
+            runner: [self-hosted, cpu]
+            gpu: false
+          - suite: nanbeige-hats
+            ref: integration
+            profile: p2fork
+            runner: [self-hosted, cuda, rtx3060]
+            gpu: true
+          - suite: nanbeige-hats
+            ref: master
+            profile: cpu-light
+            runner: [self-hosted, cpu]
+            gpu: false
+          - suite: nanbeige-arch
+            ref: integration
+            profile: cpu-light
+            runner: [self-hosted, cpu]
+            gpu: true
+          - suite: nanbeige-arch
+            ref: master
+            profile: cpu-light
+            runner: [self-hosted, cpu]
+            gpu: true
+          # Library-mechanism gates (CUDA decode): run on the integration GPU
+          # build only. skip_on_stock=true — the canary's stock build is CPU-only
+          # and cannot exercise CUDA decode gates (their probes check
+          # llama_supports_gpu_offload).
+          - suite: router
+            ref: integration
+            profile: p2fork
+            runner: [self-hosted, cuda, rtx3060]
+            gpu: true
+          - suite: prefix-cache
+            ref: integration
+            profile: p2fork
+            runner: [self-hosted, cuda, rtx3060]
+            gpu: true
+          # The project-24 cached shared-prefix composition + the LoRA-delta
+          # go/no-go probe (benchkit runner gates; same CUDA-decode class).
+          - suite: cached-router
+            ref: integration
+            profile: p2fork
+            runner: [self-hosted, cuda, rtx3060]
+            gpu: true
+          - suite: lora-probe
+            ref: integration
+            profile: p2fork
+            runner: [self-hosted, cuda, rtx3060]
+            gpu: true
+          # The routed server's refusal suite. It needs the BINARY, so it is the
+          # one cell on p2fork-server. It ran by hand through stages 4-6A and
+          # was never wired here; that is why its drift went unseen
+          # until a session compared branches.
+          - suite: p2-server-seq-routing
+            ref: integration
+            profile: p2fork-server
+            runner: [self-hosted, cuda, rtx3060]
+            gpu: true
+    runs-on: ${{ matrix.runner }}
+    name: suite (${{ matrix.suite }} / ${{ matrix.ref }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rig env
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source ci/runner/rig-env.sh
+
+      - name: Library venv
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          ci/runner/library-venv.sh
+
+      - name: BUILD (build-llamacpp.sh)
+        id: build
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          REPO_ARGS=""
+          if [[ "${{ matrix.ref }}" == "master" ]]; then
+            REPO_ARGS="--repo https://github.com/ggml-org/llama.cpp"
+          fi
+          # shellcheck disable=SC2086
+          OUT=$(ci/build/build-llamacpp.sh --ref "${{ matrix.ref }}" --profile "${{ matrix.profile }}" $REPO_ARGS 2>&1 \
+            | sed -n 's#^>> done. lib set in \(.*\)/lib$#\1#p' | tail -1)
+          test -n "$OUT"
+          echo "out=$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+
+      # ---- suite (validation gate — hard fail, no continue-on-error) --------
+      - name: SUITE (run-suite.sh)
+        id: suite
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          if [[ "${{ matrix.gpu }}" == "true" ]]; then
+            ci/runner/gpu-serialized.sh ci/runner/run-suite.sh \
+              --suite "${{ matrix.suite }}" --out "${{ steps.build.outputs.out }}"
+          else
+            ci/runner/run-suite.sh --suite "${{ matrix.suite }}" --out "${{ steps.build.outputs.out }}"
+          fi
+
+      - name: Record suite result
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          mkdir -p "$CI_ARTIFACTS"
+          REFSAFE=$(printf '%s' "${{ matrix.ref }}" | tr '/' '_')
+          cp "${{ steps.build.outputs.out }}/build-manifest.json" \
+            "$CI_ARTIFACTS/suite-${{ matrix.suite }}-${REFSAFE}.json"
+          echo "suite ${{ matrix.suite }} vs ${{ matrix.ref }}:"
+          cat "$CI_ARTIFACTS/suite-${{ matrix.suite }}-${REFSAFE}.json"

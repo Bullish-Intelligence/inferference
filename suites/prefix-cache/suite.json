@@ -1,0 +1,14 @@
+{
+  "suite": "prefix-cache",
+  "branch": "library",
+  "capability": {
+    "probe": "probes/capability.sh",
+    "required": true
+  },
+  "env": { "GPU": true, "MODEL": "Ornith-1.0-9B-UD-Q4_K_XL.gguf", "LIB": true },
+  "tests": [
+    "tests/test_prefix_cache_validation.py",
+    "tests/test_seq_reuse_validation.py"
+  ],
+  "skip_on_stock": true
+}

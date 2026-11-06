@@ -1,0 +1,30 @@
+{
+  "categories": [
+    "document_extraction",
+    "ticket_triage",
+    "tool_selection",
+    "routing",
+    "calendar_normalization",
+    "contact_normalization",
+    "invoice_extraction",
+    "support_action_plan",
+    "content_moderation",
+    "ecommerce_attributes",
+    "lead_qualification",
+    "agent_handoff"
+  ],
+  "corpus_version": "project17-json-workload-v1",
+  "files": {
+    "json_workload_100.jsonl": {
+      "entries": 100,
+      "sha256": "c157f9cf8a3d73fa4bc832859433c44b30b89b21e47f59042bea54c43151a306"
+    },
+    "json_workload_1000.jsonl": {
+      "entries": 1000,
+      "sha256": "82870ff2c190428b78a8347beda56ffa4606760f2fa9fd3b578569d3b16953e4"
+    }
+  },
+  "generation_seed": 17001,
+  "prefix_contract": "The first 100 UTF-8 lines of json_workload_1000.jsonl are byte-for-byte identical to json_workload_100.jsonl.",
+  "schema_registry": "schema_registry_v1.json"
+}

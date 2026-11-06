@@ -1,0 +1,19 @@
+id: explain/silent-overcommit
+family: explain
+version: 1
+language: python
+difficulty: 4
+origin: hand-written
+instruction: |
+  A reviewer says the check in loader.py proves a model is resident in device
+  memory. Explain, in at most 200 words, why every assertion in
+  verify_resident can hold while the model is in fact served from host memory
+  over the bus, and name the one measurement that would settle it.
+context:
+  files: [files/loader.py]
+output:
+  kind: prose
+grading:
+  parse: false
+  judge: rubric.md
+max_output_tokens: 500

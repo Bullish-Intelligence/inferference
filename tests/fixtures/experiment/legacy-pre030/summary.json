@@ -1,0 +1,6 @@
+{
+  "model": "model.gguf",
+  "stage": "prefill",
+  "started_utc": "2026-09-05T12:00:00+00:00",
+  "ended_utc": "2026-09-05T12:01:00+00:00"
+}

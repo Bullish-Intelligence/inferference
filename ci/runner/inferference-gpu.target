@@ -1,0 +1,22 @@
+# inferference-gpu.target — the set of units that hold a GPU on this rig.
+#
+# Install as a `systemd --user` target. Every inferference-server@<role>.service
+# is PartOf= it, so one `systemctl --user stop inferference-gpu.target` yields
+# every card at once.
+#
+# This is the COARSE preemption handle: it stops both servers. P0's design (19
+# preempts PER CARD — a job that fits beside a server must not evict it,
+# and a job that does not must evict only the card it landed on. That per-card
+# stop is stage 2 and is not written; ci/runner/gpu-lease.sh carries the marked
+# insertion point.
+#
+# Card <-> role mapping is $LLAMA_GPU_<ROLE> in ci/runner/rig-env.sh, so stage 2
+# resolves a leased card back to a unit through the role variable and never
+# through a literal index.
+
+[Unit]
+Description=inferference — units holding a GPU on this rig
+StopWhenUnneeded=false
+
+[Install]
+WantedBy=default.target

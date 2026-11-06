@@ -1,0 +1,11 @@
+{
+  "suite": "lora-probe",
+  "branch": "library",
+  "capability": {
+    "probe": "probes/capability.sh",
+    "required": true
+  },
+  "env": { "GPU": true, "MODEL": "Ornith-1.0-9B-UD-Q4_K_XL.gguf", "LIB": true },
+  "tests": ["tests/test_lora_probe_gate.py"],
+  "skip_on_stock": true
+}

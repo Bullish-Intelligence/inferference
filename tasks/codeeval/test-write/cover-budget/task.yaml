@@ -1,0 +1,21 @@
+id: test-write/cover-budget
+family: test-write
+version: 1
+language: python
+difficulty: 3
+origin: hand-written
+instruction: |
+  Write a pytest module that covers budget.py thoroughly. Cover the happy path,
+  every raise, the exact boundary where a placement stops fitting, and the case
+  where the reserve makes an otherwise-fitting placement fail. Import the module
+  as "from files.budget import ...". Use plain asserts and pytest.raises. Do not
+  modify budget.py. Return the whole test file.
+context:
+  files: [files/budget.py]
+output:
+  kind: full_file
+  path: test_budget.py
+grading:
+  parse: true
+  ruff: [E, F, I]
+max_output_tokens: 1400

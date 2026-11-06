@@ -1,0 +1,21 @@
+id: implement/token-bucket
+family: implement
+version: 1
+language: python
+difficulty: 2
+origin: hand-written
+instruction: |
+  Implement the TokenBucket class in ratelimit.py, replacing every
+  NotImplementedError. The docstrings state the required behaviour exactly.
+  Keep the existing signatures, the module docstring and the imports.
+context:
+  files: [files/ratelimit.py]
+output:
+  kind: full_file
+  path: files/ratelimit.py
+grading:
+  parse: true
+  ruff: [E, F, I, UP]
+  pytest: [tests/test_ratelimit.py]
+reference: reference/ratelimit.py
+max_output_tokens: 1200

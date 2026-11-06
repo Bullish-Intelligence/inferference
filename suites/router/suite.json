@@ -1,0 +1,16 @@
+{
+  "suite": "router",
+  "branch": "library",
+  "capability": {
+    "probe": "probes/capability.sh",
+    "required": true
+  },
+  "env": { "GPU": true, "MODEL": "Ornith-1.0-9B-UD-Q4_K_XL.gguf", "LIB": true },
+  "tests": [
+    "tests/test_router_context_pool_gates.py",
+    "tests/test_router_cached_restore.py",
+    "tests/test_router_grammar_gate.py",
+    "tests/test_router_adapter_isolation.py"
+  ],
+  "skip_on_stock": true
+}

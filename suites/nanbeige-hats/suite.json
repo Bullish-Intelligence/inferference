@@ -1,0 +1,14 @@
+{
+  "suite": "nanbeige-hats",
+  "branch": "feat/nanbeige-hats",
+  "capability": {
+    "probe": "probes/capability.sh",
+    "required": true
+  },
+  "env": { "GPU": true, "MODEL": "Nanbeige4.2-3B-UD-Q4_K_XL.gguf", "LIB": true },
+  "tests": [
+    "tests/test_hats_binding.py",
+    "tests/test_hats_behavior_gpu.py"
+  ],
+  "skip_on_stock": true
+}

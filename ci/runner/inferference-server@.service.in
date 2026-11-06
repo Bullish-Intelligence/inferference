@@ -1,0 +1,74 @@
+# inferference-server@<role>.service — llama-server on the llama-infernal fork.
+#
+# TEMPLATE. Do not install this file directly. Substitute @REPO_DIR@ and install
+# it as a `systemd --user` unit. See ci/build/mode-a.md and
+# the server seq-routing spike's handoff notes.
+#
+# ONE INSTANCE PER CARD, NAMED BY ROLE — not by index:
+#
+#   systemctl --user start inferference-server@<role>
+#
+# <role> is any role declared in ci/runner/rig-local.sh.
+#
+# %i is the role. The CARD is resolved from that role's rig variable
+# ($LLAMA_GPU_<ROLE>) inside
+# ci/runner/inferference-server-launch.sh. The original sketch pinned
+# `Environment="CUDA_VISIBLE_DEVICES=0"`; that predates 19's two-model decision
+# and is the literal index AGENTS.md forbids. A unit file holds no index here,
+# because it cannot compute one.
+#
+# THIS UNIT TAKES NO GPU LOCK. Preemption is the arbitration: a CI job
+# whose VRAM budget does not fit beside this server stops it inside that card's
+# lock and restarts it on exit. A unit that took the lock would deadlock all CI
+# for its lifetime. Removing PartOf= reintroduces silent GPU contention.
+#
+# The preemption half is P0 STAGE 2 and IS NOT WRITTEN YET. ci/runner/gpu-lease.sh
+# carries the marked insertion point. Until it lands, a resident server and a
+# heavy CI job contend, and the CI job waits (it does not OOM).
+
+[Unit]
+Description=inferference — routed llama-server (%i)
+Documentation=file://@REPO_DIR@/ci/build/mode-a.md
+StartLimitBurst=5
+StartLimitIntervalSec=60
+PartOf=inferference-gpu.target
+
+[Service]
+Type=exec
+
+# --- runtime configuration is YAML, and ONLY YAML ----------------------------
+# One role, one file: %h/.config/inferference/%i.yaml, resolved at start by
+# ci/runner/inferference-config.py. Schema in ci/runner/server-role.example.yaml.
+#
+# The template lives in a repository, so it holds no rig path and no port. It
+# holds no EnvironmentFile either. An earlier revision configured the role
+# through INFERFERENCE_PORT/_MODEL/_NGL/... in server-%i.env; that mechanism is
+# REMOVED. Two mechanisms let a server run a port one file names and another
+# does not, with neither file showing which won. Do not reintroduce it.
+#
+# The unit reads YAML AT START, so changing a model, a port or an adapter pool
+# is an edit plus `systemctl --user restart`, never a NixOS rebuild. That is why
+# these values are not here.
+#
+# This line says WHERE the YAML is, never what is in it.
+Environment=INFERFERENCE_CONFIG_DIR=%h/.config/inferference
+
+# The launcher resolves the card, the artefact, the model and the loader path,
+# and refuses with EX_CONFIG (78) on any missing rig fact — before the model is
+# touched. --check does the same resolution without starting the server.
+ExecStartPre=@REPO_DIR@/ci/runner/inferference-server-launch.sh %i --check
+ExecStart=@REPO_DIR@/ci/runner/inferference-server-launch.sh %i
+
+Restart=on-failure
+RestartSec=5
+# A model load is slow. Do not let systemd kill a healthy start.
+TimeoutStartSec=300
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectHome=false
+
+[Install]
+WantedBy=inferference-gpu.target

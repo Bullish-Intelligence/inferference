@@ -1,0 +1,14 @@
+{
+  "suite": "p2-server-seq-routing",
+  "branch": "feat/p2-server-seq-routing",
+  "capability": {
+    "probe": "probes/capability.sh",
+    "required": true
+  },
+  "env": { "GPU": true, "MODEL": "Nanbeige4.2-3B-UD-Q4_K_XL.gguf", "LIB": true, "SERVER": true },
+  "tests": [
+    "tests/test_seq_routing_refusals.py",
+    "tests/test_routing_smoke.py"
+  ],
+  "skip_on_stock": true
+}

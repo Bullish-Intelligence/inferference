@@ -1,0 +1,15 @@
+{
+  "suite": "p2-mixed-batch-lora",
+  "branch": "feat/p2-mixed-batch-lora",
+  "capability": {
+    "probe": "probes/capability.sh",
+    "required": true
+  },
+  "env": { "GPU": true, "MODEL": "Ornith-1.0-9B-UD-Q4_K_XL.gguf", "LIB": true },
+  "tests": [
+    "tests/test_seq_routing.py",
+    "tests/test_seq_routing_gpu.py",
+    "tests/test_p2_gates.py"
+  ],
+  "skip_on_stock": true
+}

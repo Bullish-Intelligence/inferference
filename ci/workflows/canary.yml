@@ -1,0 +1,82 @@
+# canary.yml — nightly stock-upstream sweep: the "should we bump the anchor?"
+# decision input.
+#
+# Nightly at 06:00 UTC: build stock llama.cpp master (cpu-light, `--repo`
+# override → dedicated src-llama.cpp checkout) and produce the per-branch
+# pass/fail/skip report against stock, plus the ABI canary (compile our
+# 0.3.34-anchored cdef against the stock headers+lib).
+#
+#   * PASS on stock → upstream adopted the branch's semantics
+#   * FAIL on stock → the branch broke against new upstream
+#   * SKIP on stock → capability absent (normal); probe correctly gates
+#   * abi_drift != none → upstream changed the ABI surface vs our cdef: the
+#     next re-anchor will need cdef reconciliation. RED canary.
+#
+# Informational: continue-on-error: true. A red canary never blocks; it is
+# evidence for the next bump decision.
+name: canary
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+env:
+  CI_ARTIFACTS: ci/.ci-artifacts
+
+jobs:
+  canary:
+    continue-on-error: true
+    runs-on: [self-hosted, cpu]
+    name: canary (stock master / cpu-light)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rig env
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source ci/runner/rig-env.sh
+
+      - name: Gate venv
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          ci/runner/gate-venv.sh
+
+      - name: Library venv
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          ci/runner/library-venv.sh
+
+      - name: BUILD stock upstream (cpu-light, --repo override)
+        id: build
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          OUT=$(ci/build/build-llamacpp.sh --ref master --profile cpu-light \
+              --repo https://github.com/ggml-org/llama.cpp 2>&1 \
+            | sed -n 's#^>> done. lib set in \(.*\)/lib$#\1#p' | tail -1)
+          test -n "$OUT"
+          echo "out=$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+          mkdir -p "$CI_ARTIFACTS"
+          cp "$OUT/build-manifest.json" "$CI_ARTIFACTS/canary-stock-manifest.json"
+
+      - name: Suite-driven per-branch report + ABI canary
+        run: |
+          set -euo pipefail
+          source ci/runner/rig-env.sh
+          export LLAMA_CPP_LIB_PATH="${{ steps.build.outputs.out }}/lib"
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LLAMA_CPP_LIB_PATH:$(dirname $(gcc -print-file-name=libstdc++.so)):$(dirname $(gcc -print-file-name=libgomp.so)):${LD_LIBRARY_PATH:-}"
+          ci/library/.venv/bin/python ci/canary/canary-report.py \
+            --out "${{ steps.build.outputs.out }}" \
+            --gate-python ci/gates/.venv/bin/python \
+            --library-python ci/library/.venv/bin/python \
+            --report ci/.ci-artifacts/canary-report.json
+
+      - name: Record canary report
+        run: |
+          set -euo pipefail
+          cat ci/.ci-artifacts/canary-report.json

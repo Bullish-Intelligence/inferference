@@ -1,0 +1,293 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 510fb6892..b826800ef 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -8092,9 +8092,8 @@ static void ggml_vk_ensure_sync_staging_buffer(vk_device& device, size_t size) {
+     if (device->sync_staging == nullptr || device->sync_staging->size < size) {
+         VK_LOG_MEMORY("ggml_vk_ensure_sync_staging_buffer(" << size << ")");
+         ggml_vk_destroy_buffer(device->sync_staging);
+-        device->sync_staging = ggml_vk_create_buffer_check(device, size,
+-            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostCached,
+-            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
++        device->sync_staging = ggml_vk_create_buffer(device, size,
++            {vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});
+     }
+ }
+ 
+@@ -8102,9 +8101,8 @@ static void ggml_vk_ensure_sync_staging_buffer(ggml_backend_vk_context * ctx, si
+     if (ctx->sync_staging == nullptr || ctx->sync_staging->size < size) {
+         VK_LOG_MEMORY("ggml_vk_ensure_sync_staging_buffer(" << size << ")");
+         ggml_vk_destroy_buffer(ctx->sync_staging);
+-        ctx->sync_staging = ggml_vk_create_buffer_check(ctx->device, size,
+-            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostCached,
+-            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
++        ctx->sync_staging = ggml_vk_create_buffer(ctx->device, size,
++            {vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});
+     }
+ }
+ 
+@@ -17615,7 +17613,7 @@ static ggml_backend_buffer_type_t ggml_backend_vk_device_get_buffer_type(ggml_ba
+ 
+ static ggml_backend_buffer_type_t ggml_backend_vk_device_get_host_buffer_type(ggml_backend_dev_t dev) {
+     UNUSED(dev);
+-    return ggml_backend_vk_host_buffer_type();
++    return nullptr;
+ }
+ 
+ static enum ggml_backend_dev_type ggml_backend_vk_device_get_type(ggml_backend_dev_t dev) {
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index e93641b63..d76f750ee 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1955,6 +1955,16 @@ ggml_backend_dev_t llama_model::dev_layer(int il) const {
+     return pimpl->dev_layer.at(il).dev;
+ }
+ 
++extern "C" LLAMA_API ggml_backend_dev_t llama_model_layer_device(const llama_model * model, int32_t layer);
++extern "C" LLAMA_API ggml_backend_dev_t llama_model_output_device(const llama_model * model);
++extern "C" LLAMA_API ggml_backend_dev_t llama_model_layer_device(const llama_model * model, int32_t layer) {
++    if (!model || layer < 0 || layer >= llama_model_n_layer(model)) return nullptr;
++    return model->dev_layer(layer);
++}
++extern "C" LLAMA_API ggml_backend_dev_t llama_model_output_device(const llama_model * model) {
++    return model ? model->dev_output() : nullptr;
++}
++
+ ggml_backend_dev_t llama_model::dev_output() const {
+     return pimpl->dev_output.dev;
+ }
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index a3b2a8b0f..f84d44e28 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -11,13 +11,20 @@
+ #include "fit.h"
+ #include "llama.h"
+ #include "log.h"
++#include "ggml-backend.h"
+ 
+ #include <atomic>
+ #include <clocale>
+ #include <exception>
++#include <filesystem>
++#include <fstream>
++#include <memory>
+ #include <signal.h>
+ #include <thread> // for std::thread::hardware_concurrency
+ 
++extern "C" LLAMA_API ggml_backend_dev_t llama_model_layer_device(const llama_model * model, int32_t layer);
++extern "C" LLAMA_API ggml_backend_dev_t llama_model_output_device(const llama_model * model);
++
+ #if defined(_WIN32)
+ #include <windows.h>
+ #endif
+@@ -25,6 +32,132 @@
+ static std::function<void(int)> shutdown_handler;
+ static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
+ 
++// The residency gate samples after backend initialization and before model loading.
++static unsigned long long inferference_counter(const std::filesystem::path & path) {
++    std::string text, extra;
++    std::ifstream file(path);
++    if (!std::getline(file, text) || text.empty() || std::getline(file, extra) ||
++        text.find_first_not_of("0123456789") != std::string::npos) {
++        throw std::runtime_error("residency counter unavailable: " + path.string());
++    }
++    return std::stoull(text);
++}
++
++static ggml_backend_t inferference_baseline() {
++    const char * card = std::getenv("INFERFERENCE_GTT_BASELINE_CARD");
++    if (!card) return nullptr;
++    const std::string number(card);
++    if (number.empty() || number.find_first_not_of("0123456789") != std::string::npos) {
++        throw std::runtime_error("invalid baseline card");
++    }
++    const auto path = std::filesystem::path("/sys/class/drm") / ("card" + number) / "device";
++    const auto pci = std::filesystem::canonical(path).filename().string();
++    auto device = ggml_backend_dev_by_name("Vulkan0");
++    if (!device) throw std::runtime_error("baseline Vulkan device missing");
++    ggml_backend_dev_props props{};
++    ggml_backend_dev_get_props(device, &props);
++    if (!props.device_id || pci != props.device_id) throw std::runtime_error("baseline PCI mismatch");
++    auto backend = ggml_backend_dev_init(device, nullptr);
++    if (!backend) throw std::runtime_error("baseline backend initialization failed");
++    unsigned long long gtt, vram;
++    try {
++        gtt = inferference_counter(path / "mem_info_gtt_used");
++        vram = inferference_counter(path / "mem_info_vram_used");
++    } catch (...) {
++        ggml_backend_free(backend);
++        throw;
++    }
++    fprintf(stderr, "INFERFERENCE_BASELINE card=%s pci=%s gtt=%llu vram=%llu\n", card, pci.c_str(), gtt, vram);
++    return backend;
++}
++
++struct residency_guard {
++    struct card {
++        ggml_backend_dev_t device;
++        ggml_backend_t backend;
++        std::filesystem::path sysfs;
++        std::string pci;
++        unsigned long long vram;
++        unsigned long long gtt;
++        int layers = 0;
++    };
++    std::vector<card> cards;
++
++    static unsigned long long counter(const std::filesystem::path & path) {
++        return inferference_counter(path);
++    }
++
++    explicit residency_guard(const common_params & params) {
++        try {
++            if (params.sleep_idle_seconds >= 0) throw std::runtime_error("residency requires sleep to be disabled");
++            for (auto dev : params.devices) {
++                if (!dev) break;
++                ggml_backend_dev_props props{};
++                ggml_backend_dev_get_props(dev, &props);
++                if (!props.device_id || ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
++                    throw std::runtime_error("residency device has no GPU PCI identity");
++                }
++                std::filesystem::path found;
++                for (const auto & entry : std::filesystem::directory_iterator("/sys/class/drm")) {
++                    const auto name = entry.path().filename().string();
++                    if (name.size() < 5 || name.compare(0, 4, "card") != 0 ||
++                        name.find_first_not_of("0123456789", 4) != std::string::npos) continue;
++                    const auto path = entry.path() / "device";
++                    if (std::filesystem::canonical(path).filename() == props.device_id) {
++                        if (!found.empty()) throw std::runtime_error("duplicate PCI identity");
++                        found = path;
++                    }
++                }
++                if (found.empty()) throw std::runtime_error("residency PCI identity has no DRM card");
++                auto backend = ggml_backend_dev_init(dev, nullptr);
++                if (!backend) throw std::runtime_error("residency backend initialization failed");
++                cards.push_back({dev, backend, found, props.device_id, 0, 0});
++            }
++            if (cards.empty()) throw std::runtime_error("residency requires explicit GPU devices");
++            for (auto & c : cards) {
++                c.gtt = counter(c.sysfs / "mem_info_gtt_used");
++                c.vram = counter(c.sysfs / "mem_info_vram_used");
++            }
++        } catch (...) {
++            for (auto & c : cards) ggml_backend_free(c.backend);
++            throw;
++        }
++    }
++
++    ~residency_guard() { for (auto & c : cards) ggml_backend_free(c.backend); }
++
++    json verify(const llama_context * ctx) {
++        const auto * model = llama_get_model(ctx);
++        const int count = llama_model_n_layer(model);
++        if (count <= 0) throw std::runtime_error("residency layer count is invalid");
++        for (int i = 0; i < count; ++i) {
++            auto dev = llama_model_layer_device(model, i);
++            auto it = std::find_if(cards.begin(), cards.end(), [dev](const card & c) { return c.device == dev; });
++            if (it == cards.end()) throw std::runtime_error("model layer assigned outside selected GPUs");
++            ++it->layers;
++        }
++        const auto output = llama_model_output_device(model);
++        if (std::none_of(cards.begin(), cards.end(), [output](const card & c) { return c.device == output; })) {
++            throw std::runtime_error("model output assigned outside selected GPUs");
++        }
++        json evidence = json::array();
++        for (const auto & c : cards) {
++            const auto gtt = counter(c.sysfs / "mem_info_gtt_used");
++            const auto vram = counter(c.sysfs / "mem_info_vram_used");
++            if (gtt > c.gtt || vram <= c.vram || c.layers == 0) {
++                throw std::runtime_error("GPU residency check failed for " + c.pci +
++                    " layers=" + std::to_string(c.layers) + " gtt=" + std::to_string(c.gtt) + "->" +
++                    std::to_string(gtt) + " vram=" + std::to_string(c.vram) + "->" + std::to_string(vram));
++            }
++            evidence.push_back({{"device", ggml_backend_dev_name(c.device)}, {"pci", c.pci},
++                {"layers", c.layers}, {"gtt_before", c.gtt}, {"gtt_after", gtt},
++                {"vram_before", c.vram}, {"vram_after", vram}});
++        }
++        return {{"layer_count", count}, {"output_device", ggml_backend_dev_name(output)},
++            {"verified_mono_us", ggml_time_us()}, {"cards", evidence}};
++    }
++};
++
+ static inline void signal_handler(int signal) {
+     if (is_terminating.test_and_set()) {
+         // in case it hangs, we can force terminate the server by hitting Ctrl+C twice
+@@ -184,6 +317,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
+     server_tools tools;
+ 
+     std::optional<server_models_routes> models_routes{};
++    json residency_evidence;
++    std::unique_ptr<residency_guard> residency;
+     if (is_router_server) {
+         // setup server instances manager
+         try {
+@@ -422,13 +557,14 @@ int llama_server(common_params & params, int argc, char ** argv) {
+ 
+     } else {
+         // setup clean up function, to be called before exit
+-        clean_up = [&ctx_http, &ctx_server, &mcp_mgr]() {
++        clean_up = [&ctx_http, &ctx_server, &mcp_mgr, &residency]() {
+             SRV_INF("%s: cleaning up before exit...\n", __func__);
+             // stop the session GC first, it finalizes live sessions and wakes pending readers
+             server_stream_session_manager_stop();
+             ctx_http.stop();
+             ctx_server.terminate();
+             mcp_mgr.shutdown();
++            residency.reset();
+             llama_backend_free();
+         };
+ 
+@@ -442,10 +578,22 @@ int llama_server(common_params & params, int argc, char ** argv) {
+         // setup communication child --> router if necessary
+         if (child.is_child()) {
+             ctx_server.set_state_callback([&](server_state state, json payload) {
++                if (residency && state == SERVER_STATE_READY) return;
+                 child.notify_to_router(server_state_to_str(state), payload);
+             });
+         }
+ 
++        std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> baseline(inferference_baseline(), ggml_backend_free);
++        if (std::getenv("INFERFERENCE_RESIDENCY_REQUIRED")) {
++            try {
++                residency = std::make_unique<residency_guard>(params);
++            } catch (const std::exception & e) {
++                SRV_ERR("residency initialization failed: %s\n", e.what());
++                clean_up();
++                if (ctx_http.thread.joinable()) ctx_http.thread.join();
++                return 1;
++            }
++        }
+         if (!ctx_server.load_model(params)) {
+             clean_up();
+             if (ctx_http.thread.joinable()) {
+@@ -455,6 +603,17 @@ int llama_server(common_params & params, int argc, char ** argv) {
+             return 1;
+         }
+ 
++        if (residency) {
++            try {
++                residency_evidence = residency->verify(ctx_server.get_llama_context());
++            } catch (const std::exception & e) {
++                SRV_ERR("residency verification failed: %s\n", e.what());
++                clean_up();
++                if (ctx_http.thread.joinable()) ctx_http.thread.join();
++                return 1;
++            }
++        }
++
+         routes.update_meta(ctx_server);
+         ctx_http.is_ready.store(true);
+ 
+@@ -503,7 +662,9 @@ int llama_server(common_params & params, int argc, char ** argv) {
+         std::thread monitor_thread;
+         if (child.is_child()) {
+             monitor_thread = child.setup(shutdown_handler);
+-            child.notify_to_router(server_state_to_str(SERVER_STATE_READY), routes.get_model_info());
++            auto model_info = routes.get_model_info();
++            if (residency) model_info["inferference_residency"] = residency_evidence;
++            child.notify_to_router(server_state_to_str(SERVER_STATE_READY), model_info);
+         }
+ 
+         // this call blocks the main thread until queue_tasks.terminate() is called

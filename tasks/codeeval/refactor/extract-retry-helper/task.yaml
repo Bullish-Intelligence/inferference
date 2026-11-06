@@ -1,0 +1,23 @@
+id: refactor/extract-retry-helper
+family: refactor
+version: 1
+language: python
+difficulty: 3
+origin: hand-written
+instruction: |
+  Three methods in client.py repeat the same retry-with-backoff loop.
+  Extract that loop into one private helper and call it from all three sites.
+  Behaviour must not change: the same number of attempts, the same backoff
+  sequence, the same exception raised after the last attempt, and the same
+  calls to sleep. Return the whole refactored client.py.
+context:
+  files: [files/client.py, files/errors.py]
+output:
+  kind: full_file
+  path: files/client.py
+grading:
+  parse: true
+  ruff: [E, F, I, UP]
+  pytest: [tests/test_client.py]
+reference: reference/client.py
+max_output_tokens: 1600

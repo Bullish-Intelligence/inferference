@@ -1,0 +1,9 @@
+{
+  "llama_cpp_python_ref": "v0.3.34",
+  "llama_cpp_python_commit": "629bd1b333f60d24a01886c5f99019f4c7c3ea6c",
+  "llama_cpp_anchor": "0ab9d6fed",
+  "llama_cpp_built_commit": "ecc0cb0d34e17595ff0546b89c44fa100d076c0d",
+  "build_flags": "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86",
+  "ggml_version": "libggml.so.0.18.0",
+  "mode": "A"
+}

@@ -1,0 +1,21 @@
+id: complete/finish-merge-intervals
+family: complete
+version: 1
+language: python
+difficulty: 3
+origin: hand-written
+instruction: |
+  intervals.py is unfinished. Complete merge_intervals at the cursor, and leave
+  everything above and below it exactly as it is. Return the whole file.
+context:
+  files: [files/intervals.py]
+  cursor: files/intervals.py:24
+output:
+  kind: full_file
+  path: files/intervals.py
+grading:
+  parse: true
+  ruff: [E, F, I]
+  pytest: [tests/test_intervals.py]
+reference: reference/intervals.py
+max_output_tokens: 900

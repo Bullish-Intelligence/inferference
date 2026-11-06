@@ -1,0 +1,20 @@
+id: implement/parse-semver
+family: implement
+version: 1
+language: python
+difficulty: 2
+origin: hand-written
+instruction: |
+  Implement parse_version in semver.py. The docstring states the grammar and
+  every error case. Return the whole file.
+context:
+  files: [files/semver.py]
+output:
+  kind: full_file
+  path: files/semver.py
+grading:
+  parse: true
+  ruff: [E, F, I, UP]
+  pytest: [tests/test_semver.py]
+reference: reference/semver.py
+max_output_tokens: 900
