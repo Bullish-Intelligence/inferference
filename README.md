@@ -152,6 +152,24 @@ currently verifies models placed on one card.
 If the reconciler cannot verify placement, it requests an unload of every
 declared model. Check the router if an unload request fails.
 
+### One public name for several cards (the replica balancer)
+
+The router maps one model name to one child. To serve one model from two cards,
+declare it resident twice under two names, one per card. Then add a `balancer:`
+key to `placement.yaml` that gives the replicas one public name:
+
+```yaml
+router:   {host: 127.0.0.1, port: 8101}     # management: reconcile, residency, eviction
+balancer: {host: 127.0.0.1, port: 8100, groups: {big: [big-card0, big-card1]}}
+```
+
+`python -m inferference.balancer --config-dir DIR` (or
+`ci/runner/inferference-balancer-launch.sh`) listens on the balancer port. It
+sends each request for `big` to the loaded member with the fewest requests in
+flight, and passes every other request to the router unchanged. Clients use the
+balancer port: `inferference.resolve_router_url()` returns it when the key is
+present. Management tools use `router.port`. See `ci/runner/placement.example.yaml`.
+
 ## Layout
 
 ```

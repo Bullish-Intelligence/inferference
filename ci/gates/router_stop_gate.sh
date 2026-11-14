@@ -127,25 +127,23 @@ fi
 # The config dir follows the reconcile CLI default (the one source of truth):
 # $INFERFERENCE_CONFIG_DIR, then /etc/inferference, then ~/.config/inferference
 # with a warning. Python needs the library to run the CLI: set
-# $INFERFERENCE_PYTHON when python3 lacks it. On failure the gate says so and
-# uses the router default port.
+# $INFERFERENCE_PYTHON when python3 lacks it. The gate talks to the ROUTER
+# (router.port), never to the balancer. There is no fallback port: a literal
+# port would be the balancer's on a machine that runs one, and the gate would
+# pass on the wrong service. An unreadable config exits 2.
 cfg_dir="$("${INFERFERENCE_PYTHON:-python3}" "${here}/runner/inferference-reconcile.py" config-dir 2>/dev/null)" || cfg_dir=""
-[[ -n "$cfg_dir" ]] || _info "config dir" "unresolved: using router port 8100 (set INFERFERENCE_PYTHON)"
-port="$(INFERFERENCE_GATE_CFG="$cfg_dir" python3 -I -c "
-import os,sys,pathlib
+[[ -n "$cfg_dir" ]] || { echo "!! cannot resolve the config dir (set INFERFERENCE_PYTHON to a python with the library). The gate needs router.port from placement.yaml and has no default." >&2; exit 2; }
+port="$(INFERFERENCE_GATE_CFG="$cfg_dir" "${INFERFERENCE_PYTHON:-python3}" -I -c "
+import os, pathlib, sys
+import yaml
+p = pathlib.Path(os.environ['INFERFERENCE_GATE_CFG']) / 'placement.yaml'
 try:
-    import yaml
-except Exception:
-    print(8100); sys.exit()
-d = os.environ.get('INFERFERENCE_GATE_CFG')
-if not d:
-    print(8100); sys.exit()
-p = pathlib.Path(d)/'placement.yaml'
-try:
-    print((yaml.safe_load(p.read_text()).get('router') or {}).get('port', 8100))
-except Exception:
-    print(8100)
-" 2>/dev/null || echo 8100)"
+    port = int((yaml.safe_load(p.read_text()).get('router') or {})['port'])
+except Exception as exc:
+    print(f'{p}: no usable router.port ({exc!r})', file=sys.stderr)
+    sys.exit(1)
+print(port)
+")" || { echo "!! cannot read router.port from ${cfg_dir}/placement.yaml. The gate has no default port." >&2; exit 2; }
 base="http://127.0.0.1:${port}"
 _info "router endpoint" "$base"
 

@@ -65,7 +65,31 @@ resident:
 # host/port are read by ci/runner/inferference-router-launch.sh to start the
 # router, and by inferference-reconcile.py as its default --router target — one
 # file, so a port is never agreed on by coincidence between the two.
+# Management tools (reconcile, residency proof, eviction) use this port.
+# When a balancer is declared below, clients do not use this port.
 router:
   host: 127.0.0.1
-  port: 8100
+  port: 8101
   models_max: 4     # 0 = unlimited
+
+# OPTIONAL: THE REPLICA BALANCER. Omit the whole key for no balancer.
+#
+# The router maps one name to one child. To serve one model from several cards,
+# declare it resident once per card under different names, then give the
+# replicas one public name here. `python -m inferference.balancer` (launched by
+# ci/runner/inferference-balancer-launch.sh) listens on host:port, sends each
+# request that names a group to the member with the fewest requests in flight,
+# and passes every other request to the router unchanged.
+#
+# Clients use THIS port (inferference.resolve_router_url() returns it when the
+# key is present). Management tools keep using router.port above.
+# Rules, all checked when the file is read: every member is a resident model; a
+# member is in at most one group; a group name may equal one of its own members
+# but no other resident model; the port differs from router.port on the same host.
+balancer:
+  host: 127.0.0.1
+  port: 8100
+  groups:
+    # public name: [members]. Members hold the same model under different
+    # names, one per card. These two example names stand in for such a pair.
+    replicated: [auto-placed, small]

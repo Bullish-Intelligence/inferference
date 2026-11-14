@@ -242,3 +242,32 @@ def test_the_cli_and_the_library_share_one_config_dir_order(monkeypatch: pytest.
     assert reconciler.config_dir() == system_dir
     # The library function, with the same dirs, returns the same answer as the CLI.
     assert config_paths.resolve_config_dir(system_dir, str(home_dir)) == reconciler.resolve_config_dir()
+
+
+def test_default_router_is_the_router_port_not_the_balancer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "placement.yaml").write_text(
+        "devices: [{id: D0, card: 0}]\n"
+        "resident: [{model: a, device: D0}]\n"
+        "router: {host: 127.0.0.1, port: 8101}\n"
+        "balancer: {host: 127.0.0.1, port: 8100, groups: {pub: [a]}}\n"
+    )
+    monkeypatch.setenv("INFERFERENCE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("INFERFERENCE_ROUTER", raising=False)
+    assert reconciler._default_router() == "http://127.0.0.1:8101"
+
+
+def test_default_router_has_no_literal_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("INFERFERENCE_CONFIG_DIR", str(tmp_path / "missing"))
+    monkeypatch.delenv("INFERFERENCE_ROUTER", raising=False)
+    with pytest.raises(SystemExit) as stop:
+        reconciler._default_router()
+    assert stop.value.code == 78
+    assert "cannot read the router address" in capsys.readouterr().err
+
+
+def test_commands_that_need_no_router_work_without_a_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("INFERFERENCE_CONFIG_DIR", str(tmp_path / "missing"))
+    monkeypatch.delenv("INFERFERENCE_ROUTER", raising=False)
+    assert reconciler.main(["config-dir"]) == 0

@@ -138,16 +138,22 @@ def _default_router() -> str:
     ``$INFERFERENCE_ROUTER`` wins if set. Otherwise read it from
     ``placement.yaml``'s ``router.host``/``router.port`` — the same file that
     declares ``--models-max``, so one file says how the router was launched.
-    Falls back to the router's own default (127.0.0.1:8100) when the config
-    cannot be read yet, e.g. on a box with no placement.yaml written.
+    This is always the ROUTER (``router.port``), never the balancer: management
+    must reach the router itself. There is no literal fallback. A fallback port
+    would be the balancer's port on a machine that runs one, and a management
+    call to the balancer reads or changes the wrong thing. An unreadable config
+    is a refusal. Pass ``--router`` or set ``$INFERFERENCE_ROUTER`` to override.
     """
     env = os.environ.get("INFERFERENCE_ROUTER")
     if env:
         return env
     try:
-        placement, _ = read_config_dir(config_dir())
-    except (ConfigError, OSError):
-        return "http://127.0.0.1:8100"
+        placement = config_paths.read_placement(config_dir())
+    except (config_paths.ConfigError, OSError) as exc:
+        die(
+            f"cannot read the router address from {config_dir() / 'placement.yaml'}: {exc}. "
+            f"Fix the config, or pass --router URL, or set $INFERFERENCE_ROUTER."
+        )
     return placement.router.url
 
 
@@ -863,8 +869,11 @@ def cmd_preset_ini(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    default_router = _default_router()
-    ap.add_argument("--router", default=default_router, help=f"router base URL (default {default_router})")
+    ap.add_argument(
+        "--router",
+        default=None,
+        help="router base URL (default: router.host and router.port of placement.yaml; never the balancer)",
+    )
     ap.add_argument(
         "--timeout",
         type=float,
@@ -893,6 +902,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("preset-ini", help="print the preset file path that this tool uses")
 
     args = ap.parse_args(argv)
+    if args.router is None and (args.cmd in ("apply", "status", "evict") or getattr(args, "router_reachable", False)):
+        args.router = _default_router()
     return {
         "render": cmd_render,
         "plan": cmd_plan,

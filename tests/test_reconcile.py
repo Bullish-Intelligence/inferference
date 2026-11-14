@@ -303,3 +303,27 @@ def test_invalid_yaml_is_loud(tmp_path: Path) -> None:
     (root / "placement.yaml").write_text("devices: [oh: no: yes]")
     with pytest.raises(ConfigError, match="not valid YAML"):
         read_config_dir(root)
+
+
+def test_config_with_a_balancer_key_loads_and_renders_the_same_preset(tmp_path: Path) -> None:
+    """The router launcher and the reconciler accept `balancer:` and ignore it."""
+    gguf = tmp_path / "m.gguf"
+    gguf.write_bytes(b"x")
+    models = {"a": _model_doc(gguf), "b": _model_doc(gguf)}
+    base = {
+        "devices": [{"id": "Vulkan0", "card": 0}, {"id": "Vulkan1", "card": 1}],
+        "resident": [{"model": "a", "device": "Vulkan0"}, {"model": "b", "device": "Vulkan1"}],
+        "router": {"port": 8101},
+    }
+    _write_config(tmp_path / "plain", models=models, placement_doc=base)
+    _write_config(
+        tmp_path / "bal",
+        models=models,
+        placement_doc={**base, "balancer": {"port": 8100, "groups": {"pub": ["a", "b"]}}},
+    )
+    from inferference.placement import render_preset_ini
+
+    plain, plain_specs = read_config_dir(tmp_path / "plain")
+    bal, bal_specs = read_config_dir(tmp_path / "bal")
+    assert bal.balancer is not None and bal.router.port == 8101
+    assert render_preset_ini(bal, bal_specs) == render_preset_ini(plain, plain_specs)

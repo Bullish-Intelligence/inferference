@@ -181,6 +181,51 @@ one child process per model. The shape is:
 A model is served from the VRAM of the card its placement names, or it is not
 served. See rule 3.
 
+### The replica balancer
+
+The router maps one name to one child. To serve one model from several cards,
+declare it resident once per card under different names, then give those
+replicas one public name with a `balancer:` key in `placement.yaml`:
+
+```yaml
+router:   {host: 127.0.0.1, port: 8101}
+balancer: {host: 127.0.0.1, port: 8100, groups: {<public-name>: [<member>, <member>]}}
+```
+
+`python -m inferference.balancer` (`ci/runner/inferference-balancer-launch.sh`,
+`--check` validates and exits) is a thin proxy in front of the router. It reads
+all of its settings from `placement.yaml`, and no port is in the code.
+
+- **Two ports, two readers.** Clients use `balancer.port`.
+  `inferference.resolve_router_url()` returns it when the key is present.
+  Management tools use `router.port`: reconcile, the residency proof, eviction
+  and the stop gate. A management tool never falls back to a literal port.
+  Nothing else may listen on the balancer port.
+- **The schema refuses a bad group.** Every member is a resident model. A member
+  is in one group at most. A group name may equal one of its own members, and
+  then the name means the group. It may not equal any other resident name. The
+  balancer port differs from the router port on one host. No `balancer:` key
+  means no balancer.
+- **Choice and failover.** The balancer picks the loaded member with the fewest
+  requests in flight, and equal counts take turns. It polls `GET /models` every
+  2 s. Before it sends a byte to the client, a connection failure, a 5xx answer
+  or a 400 "model is not loaded" marks the member down until the next poll and
+  tries the next member once. After the first byte it never retries. It never
+  sends `?autoload=true`, and it removes that query from a client request.
+- **Streams are not buffered.** The balancer relays bytes as they arrive.
+  A client that leaves closes the router request.
+- **Registry answers for a group.** `/models` and `/v1/models` list the router
+  entries and one entry per group. A group entry has `members` and the total
+  `--parallel` and `--ctx-size` of its loaded members. It has no `preset` and no
+  `inferference_residency`, because those describe one child: read them from the
+  router port. `GET /slots?model=<group>` merges the member slot lists, adds
+  `member` and `member_slot_id`, and renumbers `id`. `/props`, `/tokenize`,
+  `/detokenize` and `/apply-template` go to one loaded member.
+  `/health` and `/balancer/status` answer for the balancer itself.
+- **A balanced request is not pinned to a card.** The same seed can give other
+  text on the other card. An experiment that compares cards names the member
+  and uses the router port.
+
 ## Measure, never derive
 
 The numbers that matter here are machine-specific and counter-intuitive, which

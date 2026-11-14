@@ -35,15 +35,18 @@ results in the NEXT request's messages. Input fields are read from each executor
 in `tools/mod.rs` (lines 325, 450, 648, 763, 1075, 1208, 1351) rather than
 guessed.
 
-    atuin-ai-adapter.py [--listen 127.0.0.1:8100] [--upstream http://127.0.0.1:8081/v1]
+    atuin-ai-adapter.py [--listen 127.0.0.1:8110] [--upstream http://127.0.0.1:8081/v1]
                         [--token SECRET] [--model NAME]
 
 Point atuin at it:
 
     [ai]
     enabled  = true
-    endpoint = "http://127.0.0.1:8100"
+    endpoint = "http://127.0.0.1:8110"
     api_token = "..."          # must match --token, or omit both
+
+PORT. The default listen port is 8110. It is not 8100 (the balancer, which serves
+clients) and not 8101 (the router). Pick another with --listen.
 
 SPIKE STATUS: this is a working spike, not a shipped service. It has no TLS, no
 concurrency limit beyond the threading server, and it forwards whatever the model
@@ -329,7 +332,7 @@ class ThreadingHTTP(socketserver.ThreadingMixIn, HTTPServer):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--listen", default="127.0.0.1:8100")
+    ap.add_argument("--listen", default="127.0.0.1:8110")
     ap.add_argument("--upstream", default="http://127.0.0.1:8081/v1")
     ap.add_argument("--token", default="", help="require this bearer token; empty = no auth")
     ap.add_argument("--model", default="inferference")

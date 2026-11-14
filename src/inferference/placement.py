@@ -31,6 +31,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 __all__ = [
+    "BalancerConfig",
     "BudgetError",
     "Device",
     "DeviceBudget",
@@ -255,12 +256,62 @@ class RouterConfig(_Strict):
         return f"http://{self.host}:{self.port}"
 
 
+_WILDCARD_HOSTS = {"0.0.0.0", "::", ""}
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _same_host(a: str, b: str) -> bool:
+    """True when two listen hosts can collide on one port."""
+    if a == b or a in _WILDCARD_HOSTS or b in _WILDCARD_HOSTS:
+        return True
+    return a in _LOOPBACK_HOSTS and b in _LOOPBACK_HOSTS
+
+
+class BalancerConfig(_Strict):
+    """The replica balancer: one public name for a group of resident models.
+
+    The llama.cpp router maps one name to one child. Several children can hold
+    the same model under different names, one per card. The balancer
+    (``python -m inferference.balancer``) listens on ``host:port``, sends each
+    request that names a group to one member of that group, and passes every
+    other request to the router unchanged.
+
+    A client uses ``host:port`` of the balancer. A management tool (reconcile,
+    residency proof, eviction) keeps using ``router`` and never the balancer.
+    The port has no default: two listeners on one host must differ by choice,
+    not by coincidence.
+    """
+
+    host: str = Field(default="127.0.0.1", description="the balancer's listen host")
+    port: int = Field(gt=0, le=65535, description="the balancer's listen port")
+    groups: dict[str, list[str]] = Field(description="public name -> member model names")
+
+    @field_validator("groups")
+    @classmethod
+    def _groups_are_usable(cls, groups: dict[str, list[str]]) -> dict[str, list[str]]:
+        if not groups:
+            raise ValueError("balancer.groups is empty. Declare a group, or remove the `balancer:` key.")
+        for name, members in groups.items():
+            if not name or not all(c.isalnum() or c in "-_." for c in name):
+                raise ValueError(f"balancer group name {name!r} must be alphanumeric with - _ . only")
+            if not members:
+                raise ValueError(f"balancer group '{name}' has no members")
+            if len(set(members)) != len(members):
+                raise ValueError(f"balancer group '{name}' lists a member twice: {members}")
+        return groups
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+
 class Placement(_Strict):
     """The router-level config: which models are resident, and where."""
 
     devices: list[Device]
     resident: list[Resident] = Field(default_factory=list)
     router: RouterConfig = Field(default_factory=RouterConfig)
+    balancer: BalancerConfig | None = None
 
     @model_validator(mode="after")
     def _coherent(self) -> Placement:
@@ -280,7 +331,32 @@ class Placement(_Strict):
             for d in r.devices:
                 if d not in ids:
                     raise ValueError(f"'{r.model}' names device '{d}', not in {ids}")
+        if self.balancer is not None:
+            self._check_balancer(self.balancer, seen)
         return self
+
+    def _check_balancer(self, balancer: BalancerConfig, resident: set[str]) -> None:
+        if balancer.port == self.router.port and _same_host(balancer.host, self.router.host):
+            raise ValueError(
+                f"balancer.port {balancer.port} equals router.port on the same host "
+                f"({balancer.host} / {self.router.host}). Give each its own port."
+            )
+        owner: dict[str, str] = {}
+        for group, members in balancer.groups.items():
+            for member in members:
+                if member not in resident:
+                    raise ValueError(
+                        f"balancer group '{group}' names member '{member}', which is not a resident model. "
+                        f"Resident models: {sorted(resident)}."
+                    )
+                if member in owner:
+                    raise ValueError(f"model '{member}' is a member of two groups: '{owner[member]}' and '{group}'.")
+                owner[member] = group
+            if group in resident and group not in members:
+                raise ValueError(
+                    f"balancer group name '{group}' equals the resident model '{group}', which is not a member "
+                    f"of that group. A request for '{group}' would be ambiguous. Rename the group."
+                )
 
     @property
     def models_max(self) -> int:

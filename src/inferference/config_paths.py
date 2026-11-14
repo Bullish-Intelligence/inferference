@@ -64,12 +64,11 @@ def config_dir() -> Path:
     return _config_dir()
 
 
-def resolve_router_url(config_dir: Path | None = None) -> str:
-    """Return the router's OpenAI-compatible base URL as ``placement.yaml`` declares it.
+def read_placement(config_dir: Path | None = None) -> Placement:
+    """Read and validate ``placement.yaml`` only (no model files, no sysfs).
 
-    The ``/v1`` form is returned because :class:`InferferenceClient` accepts it
-    and strips the suffix itself. Raises :class:`ConfigError` when
-    ``placement.yaml`` is missing or malformed, naming the path it looked at.
+    Raises :class:`ConfigError` when the file is missing or malformed, naming the
+    path it looked at.
     """
     root = Path(config_dir) if config_dir is not None else _config_dir()
     placement_path = root / "placement.yaml"
@@ -84,10 +83,26 @@ def resolve_router_url(config_dir: Path | None = None) -> str:
     if not isinstance(raw, dict):
         raise ConfigError(f"{placement_path}: placement must be a mapping")
     try:
-        placement = Placement.model_validate(raw)
+        return Placement.model_validate(raw)
     except ValueError as error:
         raise ConfigError(f"{placement_path}: {error}") from error
-    return f"{placement.router.url}/v1"
 
 
-__all__ = ["ConfigError", "config_dir", "resolve_config_dir", "resolve_router_url"]
+def resolve_router_url(config_dir: Path | None = None) -> str:
+    """Return the base URL a CLIENT sends inference requests to.
+
+    The balancer's URL when ``placement.yaml`` declares ``balancer:``, because a
+    client must reach every replica group by its public name. The router's URL
+    when no balancer is declared. The ``/v1`` form is returned because
+    :class:`InferferenceClient` accepts it and strips the suffix itself.
+
+    A MANAGEMENT tool (reconcile, residency proof, eviction, stop gate) must not
+    call this. It needs the router itself: ``read_placement().router.url``.
+    Raises :class:`ConfigError` when ``placement.yaml`` is missing or malformed.
+    """
+    placement = read_placement(config_dir)
+    served = placement.balancer if placement.balancer is not None else placement.router
+    return f"{served.url}/v1"
+
+
+__all__ = ["ConfigError", "config_dir", "read_placement", "resolve_config_dir", "resolve_router_url"]
