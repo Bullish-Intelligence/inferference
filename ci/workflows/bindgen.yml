@@ -8,7 +8,7 @@
 #     **Bindgen failure == ABI drift == hard fail. There is NO continue-on-error
 #     on this pinned matrix** — a compile failure is the tripwire, never a TODO.
 #   * SMOKE = the real ci/gates/abi_smoke_gate.py (GPU 0, $MODEL_DEFAULT,
-#     flock-serialized). Only the p2fork (GPU) cells run SMOKE: the behavioral
+#     flock-serialized). Only the vulkan-p2fork (GPU library) cell runs SMOKE: the behavioral
 #     proof is a GPU-rig property; cpu-light cells run BUILD + BINDGEN (the ABI
 #     tripwire is the point of a cpu-light leg). This replaces the draft's TODO
 #     SMOKE placeholder with the real gate.
@@ -33,8 +33,10 @@ env:
 
 # Every cell builds `integration`:
 # it carries every fix, so a tripwire on any other branch measured a tree
-# nothing ships. p2fork-server is here because the routed server links the same
-# libllama and must clear the same ABI anchor.
+# nothing ships. vulkan-mi25-p2fork-server is here because the routed server
+# links the same libllama and must clear the same ABI anchor. The GPU cells name
+# Vulkan profiles, the only GPU profiles this host can build. The CUDA profiles
+# p2fork and p2fork-server stay in the build script and in cffi_bindgen.py.
 jobs:
   bindgen:
     strategy:
@@ -45,11 +47,11 @@ jobs:
             profile: cpu-light
             runner: [self-hosted, cpu]
           - ref: integration
-            profile: p2fork
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-p2fork
+            runner: [self-hosted, gpu, vulkan]
           - ref: integration
-            profile: p2fork-server
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-mi25-p2fork-server
+            runner: [self-hosted, gpu, vulkan]
     runs-on: ${{ matrix.runner }}
     name: bindgen (${{ matrix.ref }} / ${{ matrix.profile }})
     steps:
@@ -93,11 +95,11 @@ jobs:
 
       # ---- SMOKE (real gate; GPU cells only) ----------------------------------
       # Pins GPU 0 and serializes on the rig GPU lock so concurrent Act jobs
-      # never contend on the two 3060s. Runs the fork lib on LLAMA_CPP_LIB_PATH
+      # never contend on the two GPUs. Runs the fork lib on LLAMA_CPP_LIB_PATH
       # against $MODEL_DEFAULT: surface probe + ~32 greedy tokens + tokenizer
       # round-trip. Exit 0 iff all pass.
       - name: SMOKE (abi_smoke_gate.py — GPU 0, serialized)
-        if: matrix.profile == 'p2fork'
+        if: matrix.profile == 'vulkan-p2fork'
         run: |
           set -euo pipefail
           source ci/runner/rig-env.sh

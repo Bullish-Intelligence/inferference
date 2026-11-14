@@ -1,13 +1,20 @@
-"""GPU-gated token-exact correctness gate for the P2-fork seq-routed backend.
+"""GPU-gated correctness gate for the P2-fork seq-routed backend.
 
-Ports the spike's fail-closed gate (``benchmarks/project17/run_p2_mixed_batch.py`` +
+On a token-exact backend the gate is token-exact, as below. On a logit-tolerance backend
+(the logits depend on the batch composition, see ``inferference.mixed_batch_gates``) the
+batch-1 claim becomes parity of the logits: one request alone, from a clean state, through
+``seq_routed`` and through ``context_pool``, bit-identical at every step. The shapes and
+the tokens are the same, so a gap is a difference in how the adapter is applied. An unknown
+backend fails.
+
+Ports the earlier fail-closed gate (``run_p2_mixed_batch.py`` +
 ``run_p2_correctness_check.py``) into the library test suite. Ground truth = each
 sequence decoded ALONE on a single-adapter context (the proven uniform-LoRA path,
 here the ``context_pool`` backend at batch-1). One mixed-batch fork decode must be
 token-exact greedy per sequence; a benign batched-greedy FP tie-flip (present in the
 no-fork path too) is classified as such, not reported as a routing failure.
 
-Runs only under the CUDA facility (``project20-gpu-pytest``) pointed at a P2 fork
+Runs only in a GPU env (a visible device and ``LLAMA_CPP_LIB_PATH``) pointed at a P2 fork
 lib. On a stock lib the seq-routing capability is absent and the whole module skips
 — fail-closed, never a hard failure.
 """
@@ -17,20 +24,28 @@ from __future__ import annotations
 import pytest
 from tests.asset_paths import asset_path
 
-from inferference.gpu_env import gpu_env_ready
+from inferference.benchkit.trace_router import TraceRouter
+from inferference.gpu_env import GPU_BACKEND_LABEL, gpu_env_ready
+from inferference.mixed_batch_gates import (
+    TOKEN_EXACT,
+    check_parity,
+    collect_isolated,
+    collect_isolated_forced,
+    gate_mode,
+    require,
+)
 from inferference.router import Backend
 
-_MODEL_PATH = asset_path("LLAMA_TEST_MODEL")
-# The probe LoRA adapters live in the rig cache (copied from the read-only
-# an earlier harness's probe runtime dir).
-# MODEL_PROBE_DIR is wired by ci/runner/rig-env.sh.
-_PROBE_DIR = asset_path("PROJECT20_PROBE_DIR")
+_MODEL_PATH = asset_path("MODEL_DEFAULT")
+# The probe LoRA adapters must match the architecture of MODEL_DEFAULT.
+# MODEL_PROBE_DIR is declared in the untracked ci/runner/rig-local.sh.
+_PROBE_DIR = asset_path("MODEL_PROBE_DIR")
 _LORA_A = _PROBE_DIR / "probe-a.gguf"
 _LORA_B = _PROBE_DIR / "probe-b.gguf"
 
 
 def _fork_gpu_ready() -> bool:
-    # Backend-agnostic: CUDA_VISIBLE_DEVICES means nothing to the Vulkan build,
+    # Backend-agnostic: a vendor device variable means nothing to a build for another backend,
     # and requiring it here SKIPS this gate on a rig that can run it.
     if not gpu_env_ready():
         return False
@@ -47,7 +62,10 @@ def _fork_gpu_ready() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _fork_gpu_ready(),
-    reason="requires P2 fork GPU env (LLAMA_CPP_LIB_PATH -> fork lib, CUDA, model, probe adapters)",
+    reason=(
+        "requires P2 fork GPU env (LLAMA_CPP_LIB_PATH -> fork lib, a GPU device, "
+        "MODEL_DEFAULT, MODEL_PROBE_DIR adapters)"
+    ),
 )
 
 _N_CTX, _N_SEQ_MAX, _MAX_TOKENS, _SEED = 2048, 4, 24, 17018
@@ -62,14 +80,19 @@ def _adapters():
     )
 
 
-def _router(backend: Backend):
+def _router(backend: Backend, cls: type | None = None):
     from inferference.models import EngineConfig
     from inferference.router import MultiLoRARouter, RouterConfig
 
-    return MultiLoRARouter(
+    return (cls or MultiLoRARouter)(
         RouterConfig(
             engine=EngineConfig(
-                model_path=str(_MODEL_PATH), n_ctx=_N_CTX, n_gpu_layers=-1, n_batch=128, seed=_SEED, backend="cuda"
+                model_path=str(_MODEL_PATH),
+                n_ctx=_N_CTX,
+                n_gpu_layers=-1,
+                n_batch=128,
+                seed=_SEED,
+                backend=GPU_BACKEND_LABEL,
             ),
             adapters=_adapters(),
             n_seq_max=_N_SEQ_MAX,
@@ -105,7 +128,7 @@ def test_seq_routed_backend_is_selected_on_fork_lib() -> None:
         router.close()
 
 
-def test_seq_routed_batch1_is_token_exact_vs_isolated_baseline() -> None:
+def _token_exact_batch1() -> None:
     """E1 — the clean routing gate, free of batch-FP confound.
 
     Ground truth = each request decoded ALONE on a single-adapter context (context-
@@ -135,6 +158,54 @@ def test_seq_routed_batch1_is_token_exact_vs_isolated_baseline() -> None:
     for i, (got, want) in enumerate(zip(fork_b1, baseline, strict=True)):
         adapter = _WORKLOAD[i][0] or "base(-1)"
         assert got == want, f"seq {i} ({adapter}) not token-exact vs isolated baseline: routing bug"
+
+
+_PARITY_PROMPTS = [
+    "The capital of France is",
+    "In a distant galaxy,",
+    "def add(a, b):",
+    "Two plus two equals",
+]
+
+
+def _logit_batch1_parity() -> None:
+    """Hypothesis gate: the adapter path of ``seq_routed`` equals the one of ``context_pool``.
+
+    Every prompt under every adapter (and the base), one request alone, clean state, the
+    tokens of ``context_pool`` forced into both. Exact. A failure here is not noise: the two
+    runs have the same shapes and tokens.
+    """
+    from inferference.router import RouteRequest
+
+    reqs = [
+        RouteRequest(prompt=p, adapter=a, max_tokens=_MAX_TOKENS)
+        for p in _PARITY_PROMPTS
+        for a in ("probe-a", "probe-b", None)
+    ]
+    pool = _router("context_pool", TraceRouter)
+    try:
+        baseline = collect_isolated(pool, reqs)
+    finally:
+        pool.close()
+    fork = _router("seq_routed", TraceRouter)
+    try:
+        assert fork.backend == "seq_routed"
+        got = collect_isolated_forced(fork, reqs, baseline)
+    finally:
+        fork.close()
+    findings = [
+        f
+        for r, a, b in zip(reqs, baseline, got, strict=True)
+        for f in check_parity(f"{r.adapter or 'base'} {r.prompt!r}", a, b)
+    ]
+    require(findings, "seq_routed alone differs from context_pool alone")
+
+
+def test_seq_routed_batch1_is_token_exact_vs_isolated_baseline() -> None:
+    if gate_mode() == TOKEN_EXACT:
+        _token_exact_batch1()
+    else:
+        _logit_batch1_parity()
 
 
 def test_mixed_batch_decode_routes_without_leakage() -> None:

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Housekeeping for the Act workdir cache (~/.cache/act) — the step-6 companion
+# Housekeeping for the Act workdir cache (~/.cache/act), a companion
 # to prune-builds.sh.
 #
 # Why: every `act -j <job>` run materializes a fresh checkout under
 # ~/.cache/act/<hash>/ and keeps it for reuse. Each workdir carries the repo
 # (including gitignored build garages + venvs when the job builds them), so the
-# cache grows per job and the disk hits ~98% without anyone noticing (observed
-# at step-5 end; the session trimmed to the 2 newest by hand).
+# cache grows per job and the disk hits ~98% without anyone noticing (seen in
+# practice; trimming to the 2 newest by hand fixed it).
 #
 # Policy:
-#   * keep the N newest workdirs (default 2 — the step-5 convention), delete
+#   * keep the N newest workdirs (default 2), delete
 #     the rest.
 #   * NEVER run this mid-job: act workdirs are in use while a job runs. Run it
 #     outside act (between sessions), like prune-builds.sh.

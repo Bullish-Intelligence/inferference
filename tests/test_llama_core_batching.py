@@ -10,9 +10,6 @@ of prompts and that a batch fitting in one wave matches the router's ``run``.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
 
 from inferference.batching import (
@@ -24,6 +21,7 @@ from inferference.batching import (
 )
 from inferference.decode import FINISH_LENGTH, FINISH_STOP
 from inferference.gpu_env import gpu_env_ready
+from tests.asset_paths import asset_path
 
 EOS = 0
 
@@ -208,9 +206,9 @@ def test_empty_request_list() -> None:
 # --------------------------------------------------------------------------- #
 
 # The rig's own model, never a model this repo names. $MODEL_DEFAULT is the
-# default role declared in ci/runner/rig-local.sh; an empty path simply does not
-# exist, so the test below skips rather than failing on someone else's machine.
-_MODEL_PATH = Path(os.environ.get("LLAMA_TEST_MODEL") or os.environ.get("MODEL_DEFAULT") or "")
+# default role declared in ci/runner/rig-local.sh; an unset variable gives a path
+# that cannot exist, so the test below skips rather than failing on someone else's machine.
+_MODEL_PATH = asset_path("MODEL_DEFAULT")
 
 
 def _gpu_ready() -> bool:
@@ -227,7 +225,7 @@ def _gpu_ready() -> bool:
     return True
 
 
-@pytest.mark.skipif(not _gpu_ready(), reason="requires GPU env (LLAMA_CPP_LIB_PATH, CUDA, model)")
+@pytest.mark.skipif(not _gpu_ready(), reason="requires GPU env (LLAMA_CPP_LIB_PATH, a GPU device, MODEL_DEFAULT)")
 def test_gpu_scheduler_matches_isolated_and_router() -> None:
     from inferference.models import EngineConfig
     from inferference.router import MultiLoRARouter, RouterConfig, RouteRequest

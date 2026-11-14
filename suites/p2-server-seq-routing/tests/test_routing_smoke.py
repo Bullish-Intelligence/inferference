@@ -10,7 +10,7 @@ The five arms and why the controls are not optional are in
 arms are what located all three failed builds.
 
 **Adding an architecture is two commands, not a code change.** Synthesize the
-adapter sets, then name the model here or in ``ROUTING_SMOKE_MODELS``::
+adapter sets, then name the model through its role variable or in ``ROUTING_SMOKE_MODELS``::
 
     ci/library/.venv/bin/python suites/p2-server-seq-routing/make_arch_lora.py \\
         --model <model.gguf> --out-dir "$ROUTING_SMOKE_ADAPTERS"
@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.asset_paths import asset_path
 
 SUITE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SUITE_DIR))
@@ -40,25 +41,27 @@ import routing_smoke  # noqa: E402
 MODELS = Path(os.environ.get("INFERFERENCE_MODELS_DIR", "~/.cache/inferference/models")).expanduser()
 SMOKE_ROOT = Path(os.environ.get("ROUTING_SMOKE_ADAPTERS", str(MODELS / "routing-smoke")))
 
-# (adapter subdirectory, model file). Three architectures, each a different
-# graph shape:
-#   llama    the arch R12 was found and fixed on
+# (adapter subdirectory, inventory variable). Each entry is a model role. The
+# machine inventory (ci/runner/rig-local.sh) says which GGUF fills it. The
+# roles cover graph shapes that differ:
+#   llama    the arch R12 was found and fixed on        ($MODEL_LLAMA)
 #   nanbeige looped; its row reduction sits outside the layer loop
-#   qwen35   hybrid, and irregular: 24 SSM blocks and 8 full-attention blocks at
-#            3, 7, ... 31. The gate handles it without a constant because
-#            arch_blocks reads the structure out of the GGUF.
-DEFAULT_MODELS = [
-    ("tinyllama", MODELS / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"),
-    ("nanbeige", Path(os.environ.get("MODEL_NANBEIGE", str(MODELS / "Nanbeige4.2-3B-UD-Q4_K_XL.gguf")))),
-    ("ornith", Path(os.environ.get("MODEL_ORNITH", str(MODELS / "Ornith-1.0-9B-UD-Q4_K_XL.gguf")))),
+#                                                       ($MODEL_NANBEIGE)
+#   default  whatever the machine declares as default   ($MODEL_DEFAULT). It
+#            can be a hybrid, irregular graph. The gate handles it without a
+#            constant because arch_blocks reads the structure out of the GGUF.
+DEFAULT_ROLES = [
+    ("llama", "MODEL_LLAMA"),
+    ("nanbeige", "MODEL_NANBEIGE"),
+    ("default", "MODEL_DEFAULT"),
 ]
 
 
 def _configured() -> list[tuple[str, Path]]:
-    """DEFAULT_MODELS, or ROUTING_SMOKE_MODELS as 'name=path,name=path'."""
+    """The inventory roles, or ROUTING_SMOKE_MODELS as 'name=path,name=path'."""
     raw = os.environ.get("ROUTING_SMOKE_MODELS")
     if not raw:
-        return DEFAULT_MODELS
+        return [(name, asset_path(var)) for name, var in DEFAULT_ROLES]
     out = []
     for item in raw.split(","):
         name, _, path = item.partition("=")
@@ -82,7 +85,9 @@ pytestmark = pytest.mark.skipif(
 def test_routing_serves_on_this_architecture(name: str, model: Path, tmp_path: Path) -> None:
     lora_dir = SMOKE_ROOT / name
     if not model.is_file():
-        pytest.skip(f"model absent: {model}")
+        role_var = dict(DEFAULT_ROLES).get(name)
+        hint = f"; declare {role_var} in ci/runner/rig-local.sh" if role_var else ""
+        pytest.skip(f"model for {name!r} absent: {model}{hint}")
     missing = [p for p in ("last-ffn", "mid-ffn", "last-attn") if len(sorted(lora_dir.glob(f"{p}-*.gguf"))) != 2]
     if missing:
         pytest.skip(

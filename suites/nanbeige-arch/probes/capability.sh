@@ -7,7 +7,7 @@
 # recognized with the expected layer expansion.)
 #
 # Usage: probes/capability.sh [<lib-dir>]   (default: $LLAMA_CPP_LIB_PATH)
-# Env: MODEL_NANBEIGE (the Nanbeige GGUF path) — wired by ci/runner/rig-env.sh.
+# Env: MODEL_NANBEIGE (the nanbeige-architecture GGUF path) — from the nanbeige role in rig-local.sh.
 set -euo pipefail
 
 lib_dir="${1:-${LLAMA_CPP_LIB_PATH:-}}"
@@ -18,7 +18,7 @@ fi
 
 model="${MODEL_NANBEIGE:-}"
 if [[ -z "${model}" ]]; then
-  echo "!! capability.sh: MODEL_NANBEIGE is not set; source ci/runner/rig-env.sh (roles come from the untracked ci/runner/rig-local.sh)" >&2
+  echo "!! capability.sh: MODEL_NANBEIGE is not set; source ci/runner/rig-env.sh (declare the nanbeige role in the untracked ci/runner/rig-local.sh; see ci/runner/rig-local.example.sh)" >&2
   exit 1
 fi
 if [[ ! -f "${model}" ]]; then

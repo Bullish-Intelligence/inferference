@@ -33,6 +33,36 @@ def apply_packed_bitmask_inplace(logits: Any, packed_mask: Any, vocab_size: int)
     logits[:vocab_size][~allowed] = -np.inf
 
 
+# Compact JSON: no whitespace anywhere between tokens. xgrammar's default separators
+# for ``any_whitespace=False`` are ``", "`` and ``": "``, which still force a space.
+# The explicit pair removes it. One gap remains in xgrammar 0.2.1: the grammar of a
+# free-form ``{}`` schema (root or property) still requires a space after a comma.
+COMPACT_SEPARATORS: tuple[str, str] = (",", ":")
+
+# Limit on the whitespace run at each gap between two JSON tokens, when a request opts in
+# to whitespace. Each gap takes 0 to 8 whitespace characters, in any mix of space and
+# newline. The ninth character has no valid next token, so the matcher rejects it.
+# The limit is per gap: a document with N gaps may hold up to 8 * N whitespace
+# characters. It does not bound the whole output. It does not apply to spaces inside a
+# JSON string. xgrammar 0.2.1 has no limit by default (``max_whitespace_cnt=None``): a
+# model may then loop on whitespace tokens until ``max_tokens``. 8 covers one newline
+# plus 7 spaces, which is pretty-printed JSON at indent 2, three levels deep.
+MAX_WHITESPACE_CNT = 8
+
+
+def json_schema_compile_options(*, allow_whitespace: bool = False) -> dict[str, Any]:
+    """Return the xgrammar ``compile_json_schema`` keywords for one whitespace mode.
+
+    ``allow_whitespace=False`` (the default) gives compact JSON:
+    ``any_whitespace=False`` with ``separators=(",", ":")``.
+    ``allow_whitespace=True`` gives ``any_whitespace=True`` bounded by
+    :data:`MAX_WHITESPACE_CNT`.
+    """
+    if allow_whitespace:
+        return {"any_whitespace": True, "max_whitespace_cnt": MAX_WHITESPACE_CNT}
+    return {"any_whitespace": False, "separators": COMPACT_SEPARATORS}
+
+
 class JsonSchemaGrammar:
     """One compiled grammar and one fresh XGrammar matcher per sequence."""
 
@@ -48,13 +78,32 @@ class JsonSchemaGrammar:
         schema: dict[str, Any],
         *,
         vocab_size: int,
+        allow_whitespace: bool = False,
     ) -> JsonSchemaGrammar:
-        """Compile strict JSON Schema with the true llama.cpp vocabulary width."""
+        """Compile strict JSON Schema with the true llama.cpp vocabulary width.
+
+        The output is compact JSON unless ``allow_whitespace`` is true. Then
+        whitespace is allowed, bounded by :data:`MAX_WHITESPACE_CNT`.
+        """
         import xgrammar as xgr
 
         tokenizer_info = xgr.TokenizerInfo.from_huggingface(tokenizer, vocab_size=vocab_size)
         compiler = xgr.GrammarCompiler(tokenizer_info, cache_enabled=True)
-        return cls(compiler, compiler.compile_json_schema(schema, strict_mode=True), vocab_size=vocab_size)
+        compiled = compiler.compile_json_schema(
+            schema, strict_mode=True, **json_schema_compile_options(allow_whitespace=allow_whitespace)
+        )
+        return cls(compiler, compiled, vocab_size=vocab_size)
+
+    def with_whitespace(self, schema: dict[str, Any], *, allow_whitespace: bool) -> JsonSchemaGrammar:
+        """Compile ``schema`` in another whitespace mode with this grammar's compiler.
+
+        The compiler holds the tokenizer information. This call does not build it again.
+        The matchers of the new grammar are independent of the matchers of this one.
+        """
+        compiled = self.compiler.compile_json_schema(
+            schema, strict_mode=True, **json_schema_compile_options(allow_whitespace=allow_whitespace)
+        )
+        return type(self)(self.compiler, compiled, vocab_size=self.vocab_size)
 
     def new_matcher(self) -> Any:
         import xgrammar as xgr
@@ -104,6 +153,7 @@ class GrammarCacheKey:
     canonical_schema: str
     strict_mode: bool
     xgrammar_version: str
+    allow_whitespace: bool = False
 
     @property
     def digest(self) -> str:
@@ -113,6 +163,7 @@ class GrammarCacheKey:
                 "schema": self.canonical_schema,
                 "strict_mode": self.strict_mode,
                 "xgrammar_version": self.xgrammar_version,
+                "allow_whitespace": self.allow_whitespace,
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -125,7 +176,7 @@ class GrammarCompilerCache:
 
     A compiler is reused only for an identical engine fingerprint. Compiled
     grammars additionally require an identical canonical schema, strictness,
-    and xgrammar release. Matchers remain per-request state.
+    xgrammar release, and whitespace mode. Matchers remain per-request state.
     """
 
     def __init__(self) -> None:
@@ -139,12 +190,14 @@ class GrammarCompilerCache:
         *,
         strict_mode: bool = True,
         xgrammar_version: str,
+        allow_whitespace: bool = False,
     ) -> GrammarCacheKey:
         return GrammarCacheKey(
             engine_fingerprint=fingerprint.cache_key(),
             canonical_schema=json.dumps(schema, separators=(",", ":"), sort_keys=True),
             strict_mode=strict_mode,
             xgrammar_version=xgrammar_version,
+            allow_whitespace=allow_whitespace,
         )
 
     def get_or_compile(
@@ -155,6 +208,7 @@ class GrammarCompilerCache:
         *,
         vocab_size: int,
         strict_mode: bool = True,
+        allow_whitespace: bool = False,
     ) -> JsonSchemaGrammar:
         """Return a compatible compiled grammar; do not share its matcher."""
         from importlib.metadata import version
@@ -166,6 +220,7 @@ class GrammarCompilerCache:
             schema,
             strict_mode=strict_mode,
             xgrammar_version=version("xgrammar"),
+            allow_whitespace=allow_whitespace,
         )
         cached = self._grammars.get(key.digest)
         if cached is not None:
@@ -177,7 +232,9 @@ class GrammarCompilerCache:
             self._compilers[key.engine_fingerprint] = compiler
         grammar = JsonSchemaGrammar(
             compiler,
-            compiler.compile_json_schema(schema, strict_mode=strict_mode),
+            compiler.compile_json_schema(
+                schema, strict_mode=strict_mode, **json_schema_compile_options(allow_whitespace=allow_whitespace)
+            ),
             vocab_size=vocab_size,
         )
         self._grammars[key.digest] = grammar

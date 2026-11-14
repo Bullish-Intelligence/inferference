@@ -1,6 +1,6 @@
 [project]
 name = "inferference"
-version = "0.3.0"
+version = "0.4.0"
 description = "The llama.cpp teaching core: owned decode, continuous batching, multi-LoRA routing, grammar-constrained decoding, and prefix-cache / context-tree state."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -44,7 +44,7 @@ dependencies = [
 
 # Developer tools; Testee uses the pinned library venv.
 [dependency-groups]
-dev = ["pytest", "ruff", "ty==0.0.65"]
+dev = ["gguf", "pytest", "ruff", "ty==0.0.65"]
 
 [project.optional-dependencies]
 # The decode path: everything that touches llama.cpp memory or the tokenizer.
@@ -53,6 +53,10 @@ runtime = [
   "xgrammar==0.2.1",
   "llama-cpp-python==0.3.34",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Bullish-Intelligence/inferference"
+Repository = "https://github.com/Bullish-Intelligence/inferference"
 
 [build-system]
 requires = ["hatchling>=1.18"]

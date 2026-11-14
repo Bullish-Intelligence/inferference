@@ -616,7 +616,7 @@ def test_the_schedule_stops_at_the_first_pair_that_is_not_completed_or_bounded(t
 
 def test_two_scheduled_pairs_run_in_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The second pair reuses both ports, which can sit in TIME_WAIT.
-    monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port: None)
+    monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port, **_kwargs: None)
     with _make_pair_host(tmp_path) as pair:
         raw = yaml.safe_load(pair.host.spec_path.read_text())
         raw["factor"]["values"] = ["1", "2"]
@@ -637,10 +637,10 @@ def test_run_pair_hashes_the_model_once(tmp_path: Path, monkeypatch: pytest.Monk
     hashed: list[Path] = []
     original = runner._hash_file
 
-    def counting_hash(path: Path) -> str:
+    def counting_hash(path: Path, check_stop: Callable[[], None] | None = None) -> str:
         hashed.append(path)
         time.sleep(0.05)
-        return original(path)
+        return original(path, check_stop)
 
     monkeypatch.setattr(runner, "_hash_file", counting_hash)
     with _make_pair_host(tmp_path) as pair:
@@ -840,13 +840,13 @@ def test_preflight_pair_reports_a_refusal(
     assert result["check"] == "pp_table"
 
 
-# ---- the 033 dual spec set ---------------------------------------------------
+# ---- the dual spec set ---------------------------------------------------
 
 _ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("watts", (160, 180, 200, 220, 250))
-def test_each_dual_spec_matches_its_032_arm_plus_a_placement(watts: int) -> None:
+def test_each_dual_spec_matches_its_single_card_arm_plus_a_placement(watts: int) -> None:
     from inferference.experiment.conditions import hash_fixed
     from inferference.experiment.spec import load_spec
 

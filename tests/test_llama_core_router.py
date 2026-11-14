@@ -14,6 +14,7 @@ import types
 import pytest
 from pydantic import ValidationError
 
+from inferference.gpu_env import GPU_BACKEND_LABEL
 from inferference.models import EngineConfig, GenerationResult
 from inferference.router import (
     BASE,
@@ -30,7 +31,7 @@ from inferference.router import (
 
 
 def _engine() -> EngineConfig:
-    return EngineConfig(model_path="m.gguf", n_ctx=4096, n_batch=256, n_gpu_layers=-1, backend="cuda")
+    return EngineConfig(model_path="m.gguf", n_ctx=4096, n_batch=256, n_gpu_layers=-1, backend=GPU_BACKEND_LABEL)
 
 
 def test_router_config_validates_and_forbids_extra() -> None:

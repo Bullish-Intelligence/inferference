@@ -6,9 +6,11 @@
 # exclusive untimed lock over one card while the other card was unmanaged.
 #
 #   gpu-lease.sh <mib> -- <command> [args...]
-#     1. pick the card with the most free VRAM (nvidia-smi, per card)
+#     1. pick the card with the most free VRAM (per card; the vendor tool is
+#        chosen by the detected GPU vendor)
 #     2. flock that card's own lock file
-#     3. run with CUDA_VISIBLE_DEVICES pinned to that card
+#     3. run with every device variable pinned to that card
+#        (CUDA_VISIBLE_DEVICES, GGML_VK_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES, LLAMA_CI_GPU)
 #     4. propagate the child's exit code
 #
 # Step 3.5 — preemption — is NOT in this stage. No long-running unit is installed
@@ -20,7 +22,7 @@
 #
 # Environment:
 #   GPU_LEASE_CARDS          physical indexes to consider, e.g. "0 1". Default:
-#                            every card nvidia-smi reports.
+#                            every card the vendor tool reports.
 #   GPU_LEASE_LOCK_DIR       lock directory (default /tmp). One lock per card:
 #                            <dir>/llama-gpu-card<N>.lock
 #   GPU_LEASE_TIMEOUT        seconds to wait for a card. 0 = wait forever, which
@@ -191,7 +193,7 @@ for c in "${CARDS[@]}"; do (( CARD_TOTAL[$c] > max_total )) && max_total="${CARD
 # --- nested lease: reuse the outer one, never take a second lock ---------------
 # A lease inside a lease would block on a lock its own ancestor holds and hang
 # forever. Measured 2026-08-26: the gate battery ran under a lease, and
-# spikes/S9/gates.sh calls gpu-serialized.sh, which is a lease — it waited on
+# a gate script called gpu-serialized.sh, which is a lease — it waited on
 # card 1's lock until it was killed. The old single-flock gpu-serialized.sh had
 # the same deadlock, so this is not new; it is now fixed rather than avoided.
 #
@@ -268,7 +270,9 @@ done
 
 # --- pin, run, propagate ------------------------------------------------------
 # Every name is written: CUDA_VISIBLE_DEVICES is what a CUDA build reads,
-# GGML_VK_VISIBLE_DEVICES is what a Vulkan build reads, and LLAMA_CI_GPU is the
+# GGML_VK_VISIBLE_DEVICES is what a Vulkan build reads,
+# HIP_VISIBLE_DEVICES is what a ROCm build reads (all three are
+# VISIBLE_DEVICE_VARS in src/inferference/gpu_env.py), and LLAMA_CI_GPU is the
 # ROLE variable every existing job asserts against — it means "the card this CI
 # job was assigned" (rig-env.sh), which is exactly what the lease just decided.
 # Re-sourcing rig-env.sh inside the child keeps them, because it derives the
@@ -290,6 +294,7 @@ done
 export LLAMA_CI_GPU="$card"
 export CUDA_VISIBLE_DEVICES="$card"
 export GGML_VK_VISIBLE_DEVICES="$card"
+export HIP_VISIBLE_DEVICES="$card"
 export GPU_LEASE_CARD="$card"
 export GPU_LEASE_VENDOR
 export GPU_LEASE_CARD_UUID="${CARD_UUID[$card]}"

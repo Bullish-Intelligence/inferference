@@ -13,7 +13,12 @@ This module reads one run directory and reports:
 It is read-only and needs no hardware. It accepts any `soak_<N>s` stage.
 
 Run it as `python -m inferference.experiment.analysis.run_summary RUN_DIR`.
-Add `--oneline` for one `key=value` line, or `--json` for the full record.
+Add `--oneline` for one `key=value` line, or `--json` for the full record. The
+text report and `duct_pwm=` cover the duct channels. Which channels duct air
+through the cards is machine inventory. Pass `--fan-channel`, or declare
+`INFERFERENCE_DUCT_FAN_CHANNELS` (a comma list, for example `1,2`) in
+`ci/runner/rig-local.sh`. With neither, the tool refuses and names both.
+The text report lists other channels apart.
 `RUN_DIR` may also be an artifact root that holds exactly one run directory.
 """
 
@@ -22,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -315,6 +321,36 @@ def summarize_run(path: Path) -> RunSummary:
     )
 
 
+# The fan channels that duct air through the GPU cards are machine inventory,
+# not a platform fact. The library holds no default. The machine declares them
+# in `ci/runner/rig-local.sh`, and `--fan-channel` overrides that. Other
+# channels (the case exhaust, unused ports) are not part of `duct_pwm=`.
+DUCT_CHANNELS_ENV = "INFERFERENCE_DUCT_FAN_CHANNELS"
+
+
+def resolve_duct_channels(
+    explicit: Sequence[int] | None = None, environ: Mapping[str, str] | None = None
+) -> tuple[int, ...]:
+    """Return the duct fan channels: `explicit` first, then `INFERFERENCE_DUCT_FAN_CHANNELS`.
+
+    Raises `RunSummaryError` when neither names a channel. A guess would put
+    one machine's fan layout into every report.
+    """
+    if explicit:
+        return tuple(explicit)
+    declared = (os.environ if environ is None else environ).get(DUCT_CHANNELS_ENV, "").strip()
+    if declared:
+        try:
+            channels = tuple(int(item) for item in declared.split(",") if item.strip())
+        except ValueError as exc:
+            raise RunSummaryError(f"{DUCT_CHANNELS_ENV}={declared!r} must be a comma list of integers") from exc
+        if channels:
+            return channels
+    raise RunSummaryError(
+        f"no duct fan channels: pass --fan-channel, or declare {DUCT_CHANNELS_ENV} in ci/runner/rig-local.sh"
+    )
+
+
 def _fmt(value: float | None, digits: int = 1) -> str:
     return "n/a" if value is None else f"{value:.{digits}f}"
 
@@ -324,11 +360,15 @@ def _range_text(value: Range | None, digits: int = 0) -> str:
 
 
 def render_oneline(summary: RunSummary, *, fan_channels: Sequence[int] | None = None) -> str:
-    """One line of `key=value` words. The first word is `state=`; no value holds a space."""
+    """One line of `key=value` words. The first word is `state=`; no value holds a space.
+
+    `duct_pwm=` spans `fan_channels`. The default is `resolve_duct_channels()`.
+    """
+    fan_channels = resolve_duct_channels(fan_channels)
     peak_j = max((item.junction_c for item in summary.peaks), default=None)
     peak_m = max((item.mem_c for item in summary.peaks), default=None)
     peak_e = max((item.edge_c for item in summary.peaks), default=None)
-    duct_ranges = [item for channel, item in summary.fan_pwm.items() if fan_channels is None or channel in fan_channels]
+    duct_ranges = [item for channel, item in summary.fan_pwm.items() if channel in fan_channels]
     pwm_low = min((item.minimum for item in duct_ranges), default=None)
     pwm_high = max((item.maximum for item in duct_ranges), default=None)
     duct = "n/a" if pwm_low is None or pwm_high is None else f"{pwm_low:.0f}-{pwm_high:.0f}"
@@ -351,8 +391,14 @@ def render_oneline(summary: RunSummary, *, fan_channels: Sequence[int] | None = 
     )
 
 
-def render_text(summary: RunSummary) -> str:
-    """The full report, for a terminal or a log."""
+def render_text(summary: RunSummary, *, fan_channels: Sequence[int] | None = None) -> str:
+    """The full report, for a terminal or a log.
+
+    The duct section lists `fan_channels` (default `resolve_duct_channels()`), one line per
+    channel. Every other channel with a reading is listed per channel in a
+    separate "not duct" section. No channel is merged and none is hidden.
+    """
+    fan_channels = resolve_duct_channels(fan_channels)
     rows = [
         f"run: {summary.run_dir}",
         f"experiment: {summary.experiment or 'n/a'}  cap: {summary.cap_w if summary.cap_w is not None else 'n/a'} W"
@@ -371,14 +417,22 @@ def render_text(summary: RunSummary) -> str:
         f"lane_sweep {_fmt(summary.lane_sweep_tok_s)}, soak {_fmt(summary.soak_tok_s)}"
     )
     stages = ", ".join(summary.soak_stages) or "none"
-    rows.append(f"fan ducts during soak ({stages}):")
-    for channel in summary.fan_pwm:
-        rows.append(
+    duct_channels = [channel for channel in summary.fan_pwm if channel in fan_channels]
+    other_channels = [channel for channel in summary.fan_pwm if channel not in fan_channels]
+
+    def channel_row(channel: int) -> str:
+        return (
             f"  channel {channel}: pwm {_range_text(summary.fan_pwm[channel])}, "
             f"rpm {_range_text(summary.fan_rpm.get(channel))}"
         )
-    if not summary.fan_pwm:
+
+    rows.append(f"fan ducts during soak ({stages}):")
+    rows.extend(channel_row(channel) for channel in duct_channels)
+    if not duct_channels:
         rows.append("  n/a")
+    if other_channels:
+        rows.append(f"other fan channels during soak, not duct ({stages}):")
+        rows.extend(channel_row(channel) for channel in other_channels)
     rows.append(f"watchdog target pwm during soak: {_range_text(summary.watchdog_target_pwm)}")
     slope = summary.slope
     if slope is None:
@@ -402,7 +456,12 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Summarize one experiment run directory (read-only).",
     )
     parser.add_argument("run_dir", type=Path, help="a run directory, or an artifact root with one run directory")
-    parser.add_argument("--fan-channel", type=int, action="append", help="include this channel in the one-line range")
+    parser.add_argument(
+        "--fan-channel",
+        type=int,
+        action="append",
+        help=f"duct channel for the report and duct_pwm; repeat to add more (default: ${DUCT_CHANNELS_ENV})",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--oneline", action="store_true", help="print one key=value line")
     mode.add_argument("--json", action="store_true", help="print the full record as JSON")
@@ -414,15 +473,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         summary = summarize_run(args.run_dir)
+        # The JSON record holds every channel and needs no duct choice.
+        channels = None if args.json else resolve_duct_channels(args.fan_channel)
+        if args.oneline:
+            print(render_oneline(summary, fan_channels=channels))
+        elif args.json:
+            print(json.dumps(asdict(summary), indent=2, sort_keys=True))
+        else:
+            print(render_text(summary, fan_channels=channels), end="")
     except (RunSummaryError, OSError, KeyError, ValueError) as exc:
         print(f"run_summary: {exc}", file=sys.stderr)
         return 1
-    if args.oneline:
-        print(render_oneline(summary, fan_channels=args.fan_channel))
-    elif args.json:
-        print(json.dumps(asdict(summary), indent=2, sort_keys=True))
-    else:
-        print(render_text(summary), end="")
     return 0
 
 

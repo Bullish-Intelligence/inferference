@@ -15,14 +15,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import yaml
 
 from inferference.experiment.control import FanLease, arbitrate, parse_request
-from inferference.experiment.preflight import HostPaths, RunTarget
-from inferference.experiment.runner import run_experiment
+from inferference.experiment.preflight import HostPaths, PreflightRefusal, RunTarget, start_gate
+from inferference.experiment.runner import gate_junctions, run_experiment
 from inferference.experiment.server import ServerProcess
 from inferference.experiment.spec import (
     BatchFixed,
@@ -38,9 +39,11 @@ from inferference.experiment.spec import (
     ModelFixed,
     Replication,
     SafetyFixed,
+    ServerFixed,
     StartGateFixed,
 )
 from tests.pp_tables import synthetic_stock_blob
+from tests.test_experiment_control import make_cpu_root
 
 _STOCK_TABLE = synthetic_stock_blob()
 _FAKE_SERVER = Path(__file__).resolve().parent / "fixtures" / "experiment" / "fake_llama_server.py"
@@ -191,6 +194,11 @@ def _make_host(
     workloads: tuple[str, ...] = ("soak_1s",),
     honor_lease: bool = True,
     power_cap_w: int | None = None,
+    server_extra_args: dict[str, str] | None = None,
+    model_extra_args: dict[str, str] | None = None,
+    cpu_epp: str | None = None,
+    host_cpu_epp: str = "balance_performance",
+    tokens_per_slot: int = 128,
 ) -> Iterator[_Host]:
     drm_root = tmp_path / "sys-class-drm"
     hwmon_root = tmp_path / "sys-class-hwmon"
@@ -247,7 +255,7 @@ def _make_host(
             "temp3_crit": "98000\n",
         }
         if power_cap_w is not None:
-            # A patched kernel: the floor is 120 W and the owner wrote the cap.
+            # A patched kernel: the floor is 120 W and the operator wrote the cap.
             hwmon_values["power1_cap"] = f"{power_cap_w * 1_000_000}\n"
             hwmon_values["power1_cap_min"] = "120000000\n"
         for name, value in hwmon_values.items():
@@ -301,10 +309,11 @@ def _make_host(
         yaml.safe_dump(
             {
                 "model": str(model_path),
-                "ctx_per_lane": 128,
+                "ctx_per_lane": tokens_per_slot,
                 "lanes": 1,
+                **({} if model_extra_args is None else {"extra_args": model_extra_args}),
                 "footprint": {
-                    "ctx_per_lane": 128,
+                    "ctx_per_lane": tokens_per_slot,
                     "base_mib": 50.0,
                     "per_lane_mib": 10.0,
                     "measured_by": "fabricated-sysfs-vram-delta",
@@ -348,6 +357,7 @@ def _make_host(
         current_system=current_system,
         fan_status_file=status_file,
         repo_root=repo_root,
+        cpu_root=make_cpu_root(tmp_path / "cpu-root", epp=host_cpu_epp),
     )
     spec = ExperimentSpec(
         experiment="wp12-runner-test",
@@ -355,13 +365,14 @@ def _make_host(
         fixed=Fixed(
             model=ModelFixed(sha256_must_match=True, sha256=model_sha),
             build=BuildFixed(manifest_must_match=True, build_id="fake-build", features=("vulkan",)),
-            context=ContextFixed(slots=2, tokens_per_slot=128),
+            context=ContextFixed(slots=2, tokens_per_slot=tokens_per_slot),
             cache=CacheFixed(k="q8_0", v="q8_0"),
             batch=BatchFixed(size=64, ubatch=64),
             control=ControlFixed(fan_profile="flat-max", power_profile="power-saving", power_cap_w=power_cap_w),
             safety=SafetyFixed(machine_limit_c=80, arm_bound_c=75, gtt_limit_mib=512),
             start_gate=StartGateFixed(max_c=24, tolerance_c=1, hold_s=0),
-            host=HostFixed(loadavg_1m_max=5.0),
+            host=HostFixed(loadavg_1m_max=5.0, cpu_epp=cpu_epp),
+            server=None if server_extra_args is None else ServerFixed(extra_args=server_extra_args),
         ),
         factor=Factor(name="lanes", values=factor_values),
         workloads=workloads,
@@ -496,7 +507,7 @@ def test_arm_bound_run_is_bounded_and_next_scheduled_run_starts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _make_host(tmp_path, factor_values=("1", "2")) as host:
-        monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port: None)
+        monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port, **_kwargs: None)
         initial_sigint_mtime = host.sigint_file.stat().st_mtime_ns if host.sigint_file.exists() else None
 
         def ramp_then_cool(stop: threading.Event) -> None:
@@ -549,7 +560,7 @@ def test_arm_bound_stream_death_at_shutdown_stays_bounded(tmp_path: Path, monkey
     so the SIGINT lands under the client exactly like the live failure.
     """
     with _make_host(tmp_path, factor_values=("1", "2")) as host:
-        monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port: None)
+        monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port, **_kwargs: None)
         initial_sigint_mtime = host.sigint_file.stat().st_mtime_ns if host.sigint_file.exists() else None
 
         def ramp_then_cool(stop: threading.Event) -> None:
@@ -590,7 +601,7 @@ def test_table_drift_after_arm_bound_is_invalid_and_stops_schedule(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _make_host(tmp_path, factor_values=("1", "2")) as host:
-        monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port: None)
+        monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port, **_kwargs: None)
         table = host.paths.drm_root / "card0" / "device" / "pp_table"
         original_stop = ServerProcess.stop
 
@@ -628,7 +639,7 @@ def test_machine_limit_during_server_shutdown_overrides_arm_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _make_host(tmp_path, factor_values=("1", "2")) as host:
-        monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port: None)
+        monkeypatch.setattr("inferference.experiment.runner.wait_for_bindable_port", lambda _port, **_kwargs: None)
         original_stop = ServerProcess.stop
 
         def cross_machine_limit(server: ServerProcess) -> None:
@@ -740,6 +751,61 @@ def test_power_cap_reset_to_stock_during_run_is_invalid(tmp_path: Path) -> None:
         assert not host.request_file.exists()
 
 
+def _resolved_argv(run_dir: Path) -> list[str]:
+    return list(json.loads((run_dir / "resolved-command.json").read_text())["argv"])
+
+
+def test_spec_extra_args_reach_the_server_argv_and_the_resolved_command(tmp_path: Path) -> None:
+    with _make_host(
+        tmp_path,
+        server_extra_args={"threads": "2"},
+        model_extra_args={"spec-type": "ngram-mod"},
+    ) as host:
+        result = _run(host)[0]
+
+        assert result.state == "completed"
+        argv = _resolved_argv(result.run_dir)
+        assert argv[argv.index("--threads") + 1] == "2"
+        assert argv[argv.index("--spec-type") + 1] == "ngram-mod"
+        declaration = json.loads((result.run_dir / "declaration.json").read_text())
+        assert "threads" in json.dumps(declaration)
+
+
+def test_a_run_without_server_extra_args_has_no_threads_flag(tmp_path: Path) -> None:
+    with _make_host(tmp_path) as host:
+        result = _run(host)[0]
+
+        assert result.state == "completed"
+        assert "--threads" not in _resolved_argv(result.run_dir)
+
+
+def test_extra_args_with_a_runner_flag_abort_before_the_server_starts(tmp_path: Path) -> None:
+    # The spec refuses the flag at load, so the model YAML carries it here.
+    with _make_host(tmp_path, model_extra_args={"ctx-size": "1"}) as host:
+        result = _run(host)[0]
+
+        assert result.state == "aborted"
+        assert result.failure_boundary == "server:extra_args"
+        assert not (result.run_dir / "resolved-command.json").exists()
+
+
+def test_spec_extra_args_that_differ_from_the_model_yaml_abort(tmp_path: Path) -> None:
+    with _make_host(tmp_path, server_extra_args={"threads": "4"}, model_extra_args={"threads": "2"}) as host:
+        result = _run(host)[0]
+
+        assert result.state == "aborted"
+        assert result.failure_boundary == "server:extra_args"
+        assert not (result.run_dir / "resolved-command.json").exists()
+
+
+def test_spec_extra_args_equal_to_the_model_yaml_are_accepted(tmp_path: Path) -> None:
+    with _make_host(tmp_path, server_extra_args={"threads": "2"}, model_extra_args={"threads": "2"}) as host:
+        result = _run(host)[0]
+
+        assert result.state == "completed"
+        assert _resolved_argv(result.run_dir).count("--threads") == 1
+
+
 def test_preflight_refusal_records_passed_checks_and_removes_no_stale_lease(tmp_path: Path) -> None:
     with _make_host(tmp_path) as host:
         _atomic_text(host.paths.loadavg, "99.0 99 99 1/1 1\n")
@@ -798,3 +864,285 @@ def test_telemetry_read_failure_aborts_and_releases_lease(tmp_path: Path) -> Non
         assert result.failure_boundary == "telemetry"
         assert not host.request_file.exists()
         assert host.sigint_file.read_text() == "1"
+
+
+def _set_card_hotspot(host: _Host, card: int, milli_c: int) -> None:
+    hwmon = host.paths.drm_root / "pci-devices" / _PCI[card] / "hwmon" / f"hwmon{card + 1}"
+    for name in ("temp1_input", "temp2_input", "temp3_input"):
+        _atomic_text(hwmon / name, f"{milli_c}\n")
+
+
+def test_a_single_card_run_passes_the_start_gate_while_the_other_card_is_hot(tmp_path: Path) -> None:
+    with _make_host(tmp_path) as host:
+        # The gate band is 24 C plus 1 C. The neighbour card reads 60 C.
+        _set_card_hotspot(host, 1, 60_000)
+
+        result = _run(host)[0]
+
+        assert result.state == "completed"
+        gate = json.loads((result.run_dir / "stages.json").read_text())["start_gate"]
+        assert gate["passed"] is True
+
+
+def test_gate_junctions_keeps_only_the_cards_the_run_uses() -> None:
+    sample = [SimpleNamespace(card=0, temperature_hotspot_c=20.0), SimpleNamespace(card=1, temperature_hotspot_c=60.0)]
+
+    assert gate_junctions((0,), sample) == {0: 20.0}
+    assert gate_junctions((1,), sample) == {1: 60.0}
+    assert gate_junctions((0, 1), sample) == {0: 20.0, 1: 60.0}
+
+
+def test_gate_junctions_returns_nothing_when_a_used_card_is_missing_from_the_sample() -> None:
+    sample = [SimpleNamespace(card=0, temperature_hotspot_c=20.0)]
+
+    assert gate_junctions((0, 1), sample) == {}
+
+
+def test_a_pair_start_gate_still_refuses_when_one_pair_card_is_hot(tmp_path: Path) -> None:
+    with _make_host(tmp_path) as host:
+        spec = ExperimentSpec.model_validate(yaml.safe_load(host.spec_path.read_text()))
+    sample = [SimpleNamespace(card=0, temperature_hotspot_c=20.0), SimpleNamespace(card=1, temperature_hotspot_c=60.0)]
+    clock_state = {"now": 0.0}
+
+    def clock() -> float:
+        return clock_state["now"]
+
+    def sleep(seconds: float) -> None:
+        clock_state["now"] += seconds
+
+    with pytest.raises(PreflightRefusal) as excinfo:
+        start_gate(
+            spec,
+            read_junctions=lambda: gate_junctions((0, 1), sample),
+            timeout_s=5.0,
+            poll_s=1.0,
+            clock=clock,
+            sleep=sleep,
+        )
+    assert excinfo.value.check == "start_gate"
+    assert "60.0" in excinfo.value.detail
+
+    # The same sample passes for a run that uses card 0 only.
+    result = start_gate(
+        spec,
+        read_junctions=lambda: gate_junctions((0,), sample),
+        timeout_s=5.0,
+        poll_s=1.0,
+        clock=clock,
+        sleep=sleep,
+    )
+    assert result["passed"] is True
+
+
+def _stage_requests(run_dir: Path) -> list[dict[str, Any]]:
+    stages = json.loads((run_dir / "stages.json").read_text())["stages"]
+    return [request for stage in stages for request in stage["requests"]]
+
+
+def test_request_records_carry_a_content_hash_of_the_streamed_text(tmp_path: Path) -> None:
+    with _make_host(tmp_path) as host:
+        result = _run(host, env=host.env(FAKE_SERVER_CONTENT_PARTS="ab|cd| ef"))[0]
+
+        assert result.state == "completed"
+        requests = _stage_requests(result.run_dir)
+        assert requests
+        expected = hashlib.sha256(b"abcd ef").hexdigest()
+        assert {request["content_sha256"] for request in requests} == {expected}
+        assert all(request["content_sha256"] != request["response_sha256"] for request in requests)
+
+
+def test_request_records_keep_the_draft_counts_when_the_server_reports_them(tmp_path: Path) -> None:
+    with _make_host(tmp_path) as host:
+        result = _run(host, env=host.env(FAKE_SERVER_DRAFT="1"))[0]
+
+        assert result.state == "completed"
+        for request in _stage_requests(result.run_dir):
+            assert request["server_timings"]["draft_n"] == 4
+            assert request["server_timings"]["draft_n_accepted"] == 3
+
+
+def test_request_records_have_no_draft_counts_when_the_server_reports_none(tmp_path: Path) -> None:
+    with _make_host(tmp_path) as host:
+        result = _run(host)[0]
+
+        for request in _stage_requests(result.run_dir):
+            assert "draft_n" not in request["server_timings"]
+            assert "draft_n_accepted" not in request["server_timings"]
+
+
+def test_control_artifact_records_the_host_cpu_readback(tmp_path: Path) -> None:
+    with _make_host(tmp_path, model_extra_args={"threads": "2"}) as host:
+        result = _run(host)[0]
+
+        assert result.state == "completed"
+        host_block = json.loads((result.run_dir / "control.json").read_text())["host"]
+        assert host_block["cpu_epp_declared"] is None
+        assert host_block["server_threads"] == "2"
+        cpu = host_block["cpu"]
+        assert cpu["governor"] == {"0": "powersave", "1": "powersave"}
+        assert cpu["epp"] == {"0": "balance_performance", "1": "balance_performance"}
+        assert cpu["intel_pstate_status"] == "active"
+        assert cpu["no_turbo"] == "0"
+
+
+def test_control_artifact_records_no_threads_when_the_server_default_applies(tmp_path: Path) -> None:
+    with _make_host(tmp_path) as host:
+        result = _run(host)[0]
+
+        assert json.loads((result.run_dir / "control.json").read_text())["host"]["server_threads"] is None
+
+
+def test_declared_cpu_epp_that_matches_the_host_runs(tmp_path: Path) -> None:
+    with _make_host(tmp_path, cpu_epp="performance", host_cpu_epp="performance") as host:
+        result = _run(host)[0]
+
+        assert result.state == "completed"
+        assert json.loads((result.run_dir / "control.json").read_text())["host"]["cpu_epp_declared"] == "performance"
+
+
+def test_declared_cpu_epp_that_differs_from_the_host_refuses_the_run(tmp_path: Path) -> None:
+    with _make_host(tmp_path, cpu_epp="performance", host_cpu_epp="power") as host:
+        result = _run(host)[0]
+
+        assert result.state == "aborted"
+        assert result.failure_boundary is not None
+        assert "cpu_epp" in result.failure_boundary
+        assert not (result.run_dir / "resolved-command.json").exists()
+
+
+def test_cpu_epp_change_during_the_run_is_invalid(tmp_path: Path) -> None:
+    with _make_host(tmp_path, cpu_epp="performance", host_cpu_epp="performance") as host:
+        epp_file = host.paths.cpu_root / "cpu1" / "cpufreq" / "energy_performance_preference"
+
+        def change(_stop: threading.Event) -> None:
+            if _wait_for_workload_request(host):
+                _atomic_text(epp_file, "power\n")
+
+        stop, thread = _watch(host, change)
+        try:
+            result = _run(host)[0]
+        finally:
+            stop.set()
+            thread.join(timeout=1)
+        assert result.state == "invalid"
+        assert result.failure_boundary == "drift:cpu_epp"
+
+
+def _workload_stage(run_dir: Path) -> dict[str, Any]:
+    stages = json.loads((run_dir / "stages.json").read_text())["stages"]
+    return next(stage for stage in stages if stage["name"] != "residency_probe")
+
+
+def test_a_serial_corpus_stage_sends_every_prompt_once(tmp_path: Path) -> None:
+    with _make_host(tmp_path, workloads=("corpus_all",)) as host:
+        result = _run(host)[0]
+
+        assert result.state == "completed"
+        stage = _workload_stage(result.run_dir)
+        assert stage["name"] == "corpus_all"
+        assert stage["concurrency"] == 1
+        requests = stage["requests"]
+        assert len(requests) == 12
+        assert [request["task_id"] for request in requests] == sorted(request["task_id"] for request in requests)
+        assert all(request["valid"] for request in requests)
+        assert all(request["lane"] == 0 for request in requests)
+        assert len({request["prompt_sha256"] for request in requests}) == 12
+        assert all(len(request["content_sha256"]) == 64 for request in requests)
+
+
+def test_a_concurrent_corpus_stage_shares_the_prompts_between_lanes(tmp_path: Path) -> None:
+    with _make_host(tmp_path, workloads=("corpus_all",), factor_values=("4",)) as host:
+        result = _run(host)[0]
+
+        assert result.state == "completed"
+        stage = _workload_stage(result.run_dir)
+        assert stage["concurrency"] == 4
+        requests = stage["requests"]
+        assert len(requests) == 12
+        assert {request["lane"] for request in requests} == {0, 1, 2, 3}
+        assert len({request["task_id"] for request in requests}) == 12
+
+
+def test_corpus_requests_use_the_prompt_payload_in_every_mode(tmp_path: Path) -> None:
+    hashes = []
+    for lanes in ("1", "4"):
+        with _make_host(tmp_path / f"lanes-{lanes}", workloads=("corpus_all",), factor_values=(lanes,)) as host:
+            result = _run(host)[0]
+            requests = _workload_stage(result.run_dir)["requests"]
+            hashes.append({request["task_id"]: request["payload_sha256"] for request in requests})
+
+    assert hashes[0] == hashes[1]
+
+
+def test_corpus_requests_keep_the_draft_counts(tmp_path: Path) -> None:
+    with _make_host(tmp_path, workloads=("corpus_explain",)) as host:
+        result = _run(host, env=host.env(FAKE_SERVER_DRAFT="1"))[0]
+
+        request = _workload_stage(result.run_dir)["requests"][0]
+        assert request["server_timings"]["draft_n"] == 4
+        assert request["server_timings"]["draft_n_accepted"] == 3
+        assert request["task_id"].startswith("explain") or "explain" in request["task_id"]
+
+
+_AGENT_SLOT = 9000  # holds the 7800-token task description and a few turns
+
+
+def test_agent_turns_run_every_session_for_every_turn(tmp_path: Path) -> None:
+    with _make_host(tmp_path, workloads=("agent_turns_3x3",), tokens_per_slot=_AGENT_SLOT) as host:
+        result = _run(host)[0]
+
+        assert result.state == "completed"
+        stage = _workload_stage(result.run_dir)
+        assert stage["name"] == "agent_turns_3x3"
+        assert stage["concurrency"] == 3
+        assert stage["calibration"]["content_tokens"] > 0
+        requests = stage["requests"]
+        assert len(requests) == 9
+        by_session: dict[int, list[dict[str, Any]]] = {}
+        for request in requests:
+            by_session.setdefault(request["session"], []).append(request)
+        assert sorted(by_session) == [0, 1, 2]
+        for turns in by_session.values():
+            turns.sort(key=lambda item: item["turn"])
+            assert [item["turn"] for item in turns] == [0, 1, 2]
+            assert [item["prefix_matches_previous"] for item in turns] == [None, True, True]
+            prompt_tokens = [item["prompt_tokens"] for item in turns]
+            assert prompt_tokens == sorted(prompt_tokens)
+            assert prompt_tokens[0] < prompt_tokens[-1]
+            for item in turns:
+                assert item["valid"] is True
+                assert item["ttft_s"] is not None
+                assert item["cache_n"] == 0
+                assert item["prompt_n"] == item["prompt_tokens"]
+        sessions_first_turn = {turns[0]["messages_sha256"] for turns in by_session.values()}
+        assert len(sessions_first_turn) == 3
+
+
+def test_agent_turns_send_the_real_answer_and_keep_the_previous_prefix(tmp_path: Path) -> None:
+    with _make_host(tmp_path, workloads=("agent_turns_1x3",), tokens_per_slot=_AGENT_SLOT) as host:
+        result = _run(host, env=host.env(FAKE_SERVER_CONTENT_PARTS="the|answer"))[0]
+
+        assert result.state == "completed"
+        requests = _workload_stage(result.run_dir)["requests"]
+        requests.sort(key=lambda item: item["turn"])
+        bodies = [
+            json.loads((result.run_dir / "requests" / f"{item['payload_sha256']}.request.json").read_text())
+            for item in requests
+        ]
+        for earlier, later in zip(bodies, bodies[1:], strict=False):
+            expected_prefix = [*earlier["messages"], {"role": "assistant", "content": "theanswer"}]
+            assert later["messages"][: len(expected_prefix)] == expected_prefix
+            assert len(later["messages"]) == len(expected_prefix) + 1
+        assert all(body["temperature"] == 0 and body["max_tokens"] == 256 for body in bodies)
+
+
+def test_agent_turns_record_the_cache_numbers_the_server_reports(tmp_path: Path) -> None:
+    with _make_host(tmp_path, workloads=("agent_turns_1x2",), tokens_per_slot=_AGENT_SLOT) as host:
+        result = _run(host)[0]
+
+        requests = _workload_stage(result.run_dir)["requests"]
+        for request in requests:
+            assert request["server_timings"]["cache_n"] == request["cache_n"]
+            assert request["server_timings"]["prompt_n"] == request["prompt_n"]
+            assert request["reuse_fraction"] == 0.0
+            assert request["decode_tok_s"] == pytest.approx(1000.0)

@@ -17,6 +17,7 @@ from inferference import (
     collect_runtime_diagnostics,
     register_artifact,
 )
+from inferference.gpu_env import GPU_BACKEND_LABEL
 
 
 def test_boundary_models_validate_generation_and_benchmark_shapes() -> None:
@@ -54,7 +55,7 @@ def test_fingerprint_is_frozen_and_includes_adapter_identity(tmp_path: Path) -> 
         tokenizer=register_artifact(tokenizer),
         llama_cpp_python_version="0.3.34",
         llama_cpp_commit="0ab9d6fed",
-        backend="cuda",
+        backend=GPU_BACKEND_LABEL,
         n_ctx=1024,
         kv_type_k="f16",
         kv_type_v="f16",
@@ -71,7 +72,7 @@ def test_runtime_diagnostics_reads_a_runtime_build_manifest(tmp_path: Path, monk
     library_dir = tmp_path / "lib"
     library_dir.mkdir()
     (tmp_path / "build-manifest.json").write_text(
-        json.dumps({"commit": "0ab9d6fed", "profile": "cuda-3060", "ggml_version": "0.18.0"})
+        json.dumps({"commit": "0ab9d6fed", "profile": "gpu-profile", "ggml_version": "0.18.0"})
     )
     monkeypatch.setenv("LLAMA_CPP_LIB_PATH", str(library_dir))
 
@@ -79,7 +80,7 @@ def test_runtime_diagnostics_reads_a_runtime_build_manifest(tmp_path: Path, monk
 
     assert diagnostics.llama_cpp_library_path == str(library_dir)
     assert diagnostics.llama_cpp_commit == "0ab9d6fed"
-    assert diagnostics.llama_cpp_build_id == "cuda-3060"
+    assert diagnostics.llama_cpp_build_id == "gpu-profile"
     assert diagnostics.ggml_version == "0.18.0"
 
 

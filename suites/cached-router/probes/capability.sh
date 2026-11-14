@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # cached-router suite capability probe: does the pointed-at lib (1) load,
-# (2) support GPU offload (the gates are CUDA-mechanism gates), and are the rig
-# assets the runner needs present (Ornith model, probe LoRAs, Ornith tokenizer)?
+# (2) support GPU offload (the gates decode on a GPU), and are the rig
+# assets the runner needs present (default-role model, probe LoRAs, default-role tokenizer)?
 #
 # This is a library-mechanism gate (not a fork-symbol gate): on the integration
-# CUDA build it must PASS (the suite RUNS); on a CPU stock build it FAILS and
+# GPU build it must PASS (the suite RUNS); on a CPU stock build it FAILS and
 # the suite SKIPs via skip_on_stock (the canary's stock build is CPU-only and
-# cannot exercise CUDA decode gates).
+# cannot exercise GPU decode gates).
 #
 # Usage: probes/capability.sh [<lib-dir>]   (default: $LLAMA_CPP_LIB_PATH)
 set -euo pipefail
@@ -33,7 +33,8 @@ def _required(name: str) -> Path:
     if not value:
         print(
             f"!! cached-router probe: {name} is not set; source ci/runner/rig-env.sh "
-            "(roles come from the untracked ci/runner/rig-local.sh)",
+            "(declare the model role in the untracked ci/runner/rig-local.sh; "
+            "see ci/runner/rig-local.example.sh)",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -51,9 +52,9 @@ if not llama_cpp.llama_cpp.llama_supports_gpu_offload():
     print(">> [cached-router probe] ABSENT: lib has no GPU offload (CPU build) — suite skips on stock")
     sys.exit(1)
 
-model = _required("MODEL_ORNITH")
+model = _required("MODEL_DEFAULT")
 probe_dir = _required("MODEL_PROBE_DIR")
-tokenizer = _required("TOKENIZER_ORNITH")
+tokenizer = _required("TOKENIZER_DEFAULT")
 missing = [p for p in (model, probe_dir / "probe-a.gguf", probe_dir / "probe-b.gguf", tokenizer) if not p.exists()]
 if missing:
     print(f"!! cached-router probe: missing assets: {missing}", file=sys.stderr)

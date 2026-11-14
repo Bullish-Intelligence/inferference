@@ -41,7 +41,9 @@ done
   || { echo "usage: mode-a-manifest.sh --commit <sha> --lib-dir <dir> --profile <name> --dest <dir> [--flags <s>]" >&2; exit 2; }
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"      # ci/build
-work="${here}/.llamacpp-builds"
+# LLAMACPP_WORK names the build garage that holds the fork clone. A lane
+# workspace has no garage of its own; point this at the main checkout's.
+work="${LLAMACPP_WORK:-${here}/.llamacpp-builds}"
 FORK_REPO="https://github.com/Bullish-Design/llama-infernal"
 
 [[ -d "$LIB_DIR" ]] || { echo "!! --lib-dir ${LIB_DIR} does not exist" >&2; exit 2; }

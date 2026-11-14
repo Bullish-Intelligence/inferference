@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
+import os
 import re
+import signal
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +22,7 @@ from .analysis.estimators import EstimatorError, mean, ols_slope, peak, transit_
 from .analysis.load import LoadError, RunRecord, load_run
 from .analysis.paired import PairedAnalysisError, analyze_pair_root
 from .analysis.plateau import plateau_test
+from .analysis.run_summary import RunSummaryError, summarize_run
 from .analysis.series import Point, band_samples, card_series, episodes, window
 from .control import FanLease
 from .pair import run_pair
@@ -25,12 +30,25 @@ from .preflight import HostPaths, PreflightRefusal, RunTarget, preflight, prefli
 from .report import ReportError, render_analysis, render_comparison
 from .runner import RunnerError, run_experiment
 from .spec import SpecError, load_spec
+from .stop import StopRequest
 
 _DEFAULT_THERMAL_GUARD = Path("ci/runner/gpu-thermal-guard.sh")
 _DEFAULT_GPU_LEASE = Path("ci/runner/gpu-lease.sh")
 _TRANSIT_ENDPOINT = re.compile(r"^transit_(-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)$")
 _KNOWN_ENDPOINTS = frozenset(
-    {"band_slope", "band_power", "peak", "peak_junction", "transit_time", "ttft", "decode_rate", "prefill_rate"}
+    {
+        "band_slope",
+        "band_power",
+        "peak",
+        "peak_junction",
+        "transit_time",
+        "ttft",
+        "decode_rate",
+        "prefill_rate",
+        "soak_tok_s",
+        "lane_sweep_tok_s",
+        "tok_s_per_w",
+    }
 )
 
 
@@ -354,16 +372,51 @@ def _preflight_pair_command(args: argparse.Namespace) -> int:
     return 0
 
 
+@contextlib.contextmanager
+def _stop_on_signals() -> Iterator[StopRequest]:
+    """Turn SIGINT and SIGTERM into a stop request for the command body.
+
+    The default SIGTERM action kills Python at once, with no `finally` block.
+    The servers then stay up, because each one runs in its own session. The
+    handler only sets the request. Each run stops its own server, once.
+    A repeat signal does nothing: it must not start a second stop.
+    A signal that the caller ignores stays ignored. The old handlers return on exit.
+    """
+    request = StopRequest()
+    if threading.current_thread() is not threading.main_thread():
+        yield request
+        return
+
+    def handler(signum: int, _frame: object) -> None:
+        name = signal.Signals(signum).name
+        first = request.request(name)
+        message = f"{name}: stopping the run and its servers\n" if first else f"{name}: already stopping\n"
+        os.write(2, message.encode())
+
+    previous: dict[int, Any] = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        if signal.getsignal(signum) is signal.SIG_IGN:
+            continue
+        previous[signum] = signal.signal(signum, handler)
+    try:
+        yield request
+    finally:
+        for signum, old in previous.items():
+            signal.signal(signum, old)
+
+
 def _run_pair_command(args: argparse.Namespace) -> int:
     targets = _pair_targets_from_args(args)
-    results = run_pair(
-        args.spec,
-        targets,
-        artifact_root=args.artifact_root,
-        paths=_host_paths(),
-        unit_active=unit_active,
-        fan_lease_factory=_fan_lease_factory,
-    )
+    with _stop_on_signals() as stop_request:
+        results = run_pair(
+            args.spec,
+            targets,
+            artifact_root=args.artifact_root,
+            paths=_host_paths(),
+            unit_active=unit_active,
+            fan_lease_factory=_fan_lease_factory,
+            stop_request=stop_request,
+        )
     payload = {
         "passed": bool(results) and all(run.state == "completed" for result in results for run in result.runs.values()),
         "pairs": [
@@ -395,14 +448,16 @@ def _analyze_pair_command(args: argparse.Namespace) -> int:
 
 def _run_command(args: argparse.Namespace) -> int:
     target = _target_from_args(args)
-    results = run_experiment(
-        args.spec,
-        target,
-        artifact_root=args.artifact_root,
-        paths=_host_paths(),
-        unit_active=unit_active,
-        fan_lease_factory=_fan_lease_factory,
-    )
+    with _stop_on_signals() as stop_request:
+        results = run_experiment(
+            args.spec,
+            target,
+            artifact_root=args.artifact_root,
+            paths=_host_paths(),
+            unit_active=unit_active,
+            fan_lease_factory=_fan_lease_factory,
+            stop_request=stop_request,
+        )
     payload = {
         "passed": bool(results) and all(result.state == "completed" for result in results),
         "runs": [
@@ -557,6 +612,15 @@ def _stage_rates(record: RunRecord) -> dict[str, Any]:
     }
 
 
+def _summary_rates(record: RunRecord) -> tuple[float | None, float | None]:
+    """Return the soak and lane sweep rates of `summarize_run`, or None for a run it cannot summarize."""
+    try:
+        summary = summarize_run(Path(record.path))
+    except RunSummaryError:
+        return None, None
+    return summary.soak_tok_s, summary.lane_sweep_tok_s
+
+
 def _transit_endpoint_names(record: RunRecord, extra: Sequence[str]) -> tuple[str, ...]:
     names = list(extra)
     if record.declaration is not None:
@@ -664,6 +728,10 @@ def _analyze_record(
             else:
                 plateau[stage_name] = {"available": True, **_jsonable(result)}
 
+    soak_tok_s, lane_sweep_tok_s = _summary_rates(record)
+    tok_s_per_w = (
+        soak_tok_s / band_power_w if soak_tok_s is not None and band_power_w is not None and band_power_w > 0 else None
+    )
     endpoint_values = {
         "band_slope": None if slope is None else slope.slope_c_per_s,
         "band_power": band_power_w,
@@ -673,6 +741,9 @@ def _analyze_record(
         "ttft": rates["ttft_mean_s"],
         "decode_rate": rates["decode"]["tokens_per_second"],
         "prefill_rate": rates["prefill"]["tokens_per_second"],
+        "soak_tok_s": soak_tok_s,
+        "lane_sweep_tok_s": lane_sweep_tok_s,
+        "tok_s_per_w": tok_s_per_w,
     }
     endpoint_values.update({name: item.seconds for name, item in transit_times.items()})
     first_episode_json = None if first_episode is None else _episode_json(first_episode)

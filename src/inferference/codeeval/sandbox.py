@@ -1,7 +1,7 @@
 """The execution boundary for generated code.
 
 Model output is untrusted. It must never run against the live repo, the
-network, or the owner's files. Every candidate runs in a throwaway directory
+network, or the user's files. Every candidate runs in a throwaway directory
 under ``bwrap`` with no network, a read-only root, a wall-clock timeout and a
 working directory that is the only writable path.
 
@@ -21,7 +21,7 @@ __all__ = ["SandboxResult", "SandboxUnavailable", "available", "run"]
 
 
 class SandboxUnavailable(RuntimeError):
-    """No usable sandbox on this machine."""
+    """No usable sandbox on the host."""
 
 
 @dataclass(frozen=True, slots=True)

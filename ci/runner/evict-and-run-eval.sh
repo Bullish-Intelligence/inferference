@@ -10,8 +10,8 @@
 # card is `ci/runner/inferference-reconcile.py evict`, which leaves the
 # placement config untouched so a later `apply` restores serving exactly.
 #
-# This is the OWNER step of OWNER-REVIEW-PACKET.md "Preflight and run
-# sequence" with the waiting built in: evict, poll until the card has actually
+# This script chains the evict step and the run step, with the waiting built
+# in: evict, poll until the card has actually
 # drained below the runner's own residency floor, then exec the experiment CLI
 # (preflight runs first inside the CLI and refuses on any mismatch).
 #
@@ -21,10 +21,10 @@
 # preflight -- fail closed, on purpose.
 #
 # Usage:
-#   ci/runner/evict-and-run-eval.sh [<spec.yaml>] [--card N] [--no-evict] [-- <extra run args>]
+#   ci/runner/evict-and-run-eval.sh <spec.yaml> [--card N] [--no-evict] [-- <extra run args>]
 #
-#   <spec.yaml>  defaults to the phase 4a 250 W baseline arm, which runs on
-#                the checked-in stock table: no upload, no guard change.
+#   <spec.yaml>  the experiment spec to run. It is required: this repository
+#                ships no experiment specs.
 #   --card N     measured card (default 0).
 #   --no-evict   skip the evict step. Use it only when the router is not
 #                running. The drain check still runs, so a card that holds
@@ -32,11 +32,18 @@
 #   -- ...       forwarded verbatim to `python -m inferference.experiment run`.
 #
 # Environment (all optional; test overrides first):
-#   EVICT_CONFIG_ROOT      placement config dir. Used both for the evict device
-#                          lookup (exported as INFERFERENCE_CONFIG_DIR for the
-#                          reconcile tool) and the run's --config-root.
-#                          Default: $INFERFERENCE_CONFIG_DIR, else
-#                          ~/.config/inferference (the reconcile default).
+#   EVICT_CONFIG_ROOT      placement config dir. Used for the evict device
+#                          lookup and for the run's --config-root. When set,
+#                          the script exports it as INFERFERENCE_CONFIG_DIR for
+#                          the reconcile tool. When unset, the script sets no
+#                          config variable: $INFERFERENCE_CONFIG_DIR passes
+#                          through, and the reconcile tool picks the dir. The
+#                          script asks `inferference-reconcile.py config-dir`
+#                          for it. That tool owns the default order:
+#                          $INFERFERENCE_CONFIG_DIR, then /etc/inferference
+#                          when it exists, then ~/.config/inferference with a
+#                          warning. The script never sets
+#                          INFERFERENCE_PRESET_INI; `evict` does not read it.
 #   EVICT_ROUTER           router base URL forwarded as --router to evict.
 #   EVICT_SERVER_BIN       server binary for --server-bin. Default:
 #                          ci/modea/server/current/bin/llama-server (the
@@ -83,7 +90,6 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-CONFIG_ROOT="${EVICT_CONFIG_ROOT:-${INFERFERENCE_CONFIG_DIR:-$HOME/.config/inferference}}"
 SYSFS_ROOT="${EVICT_SYSFS_ROOT:-/sys/class/drm}"
 VRAM_MAX_MIB="${EVICT_VRAM_MAX_MIB:-1024}"
 DRAIN_TIMEOUT_S="${EVICT_DRAIN_TIMEOUT_S:-300}"
@@ -92,7 +98,16 @@ STOCK_BLOB="${EVICT_STOCK_PP_TABLE:-$STOCK_BLOB_DEFAULT}"
 SERVER_BIN="${EVICT_SERVER_BIN:-$SERVER_BIN_DEFAULT}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
-export INFERFERENCE_CONFIG_DIR="$CONFIG_ROOT"
+# One source of truth for the default config dir: the reconcile CLI. This
+# script sets INFERFERENCE_CONFIG_DIR only when the caller sets EVICT_CONFIG_ROOT.
+if [ -n "${EVICT_CONFIG_ROOT:-}" ]; then
+    CONFIG_ROOT="$EVICT_CONFIG_ROOT"
+    export INFERFERENCE_CONFIG_DIR="$CONFIG_ROOT"
+else
+    CONFIG_ROOT="$("$PYTHON_BIN" "$REPO_ROOT/ci/runner/inferference-reconcile.py" config-dir)" \
+        || die "the reconcile tool could not name the config dir (set EVICT_CONFIG_ROOT or INFERFERENCE_CONFIG_DIR)"
+fi
+export EVICT_RESOLVED_CONFIG_DIR="$CONFIG_ROOT"
 export EVICT_CARD="$CARD"
 
 [ -n "$SPEC" ] || die "no experiment spec given: pass one as the first argument (this repository ships no experiment specs)"
@@ -111,7 +126,7 @@ DEVICE_ID="$("$PYTHON_BIN" -c '
 import os
 from pathlib import Path
 from inferference.reconcile import read_config_dir
-placement, _ = read_config_dir(Path(os.environ["INFERFERENCE_CONFIG_DIR"]))
+placement, _ = read_config_dir(Path(os.environ["EVICT_RESOLVED_CONFIG_DIR"]))
 card = int(os.environ["EVICT_CARD"])
 for device in placement.devices:
     if device.card == card:
@@ -161,8 +176,8 @@ PCI="$(basename "$(readlink -f "$SYSFS_ROOT/card$CARD/device")")"
 [ -n "$PCI" ] || die "could not resolve the PCI address of DRM card $CARD"
 
 SPEC_STEM="$(basename "$SPEC")"; SPEC_STEM="${SPEC_STEM%.yaml}"
-# Prefix the run with the experiment directory's number (032, 033, ...), so
-# arms of the same name from different experiments never look alike.
+# When the spec directory name starts with a number (such as 101-name), prefix
+# the run with it, so arms of the same name from different experiments differ.
 SPEC_PROJECT="$(basename "$(dirname "$SPEC")")"; SPEC_PROJECT="${SPEC_PROJECT%%-*}"
 if [[ "$SPEC_PROJECT" =~ ^[0-9]+$ ]]; then SPEC_STEM="${SPEC_PROJECT}-${SPEC_STEM}"; fi
 RUNS_DIR="${EVICT_RUNS_DIR:-$REPO_ROOT/runs}"

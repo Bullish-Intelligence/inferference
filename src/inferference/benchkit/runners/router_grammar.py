@@ -17,11 +17,13 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from inferference.gpu_env import lib_backend_label
 from inferference.models import EngineConfig
 from inferference.router import (
     AdapterSpec,
@@ -31,7 +33,7 @@ from inferference.router import (
 )
 
 from ..env import gpu_snapshot, require_ci_device, require_gpu0_only
-from ..gates import _resolve_tokenizer
+from ..gates import _resolve_tokenizer, load_tokenizer
 from ..runenv import RunContext
 
 REPO = Path(__file__).resolve().parents[3]
@@ -68,6 +70,39 @@ def validate(text: str) -> dict[str, Any]:
     except ValidationError:
         pass
     return out
+
+
+def diagnose(text: str, finish_reason: str, token_ids: Sequence[int], max_tokens: int) -> str:
+    """Say why a constrained output is not schema-valid. This never makes it valid.
+
+    The default grammar is compact JSON, which allows no whitespace between tokens. A
+    request with ``allow_whitespace=True`` allows at most ``MAX_WHITESPACE_CNT``
+    whitespace characters at each place between tokens. Either way, a model that
+    prefers a masked token can use the whole token budget on the tokens that remain.
+    The output is cut at ``max_tokens``, and a cut JSON is not valid. The label
+    separates that case from a finished output that is wrong.
+    """
+    v = validate(text)
+    if v["schema_ok"]:
+        return "valid"
+    blank = sum(1 for c in text if c.isspace())
+    share = blank / len(text) if text else 0.0
+    if finish_reason != "stop" or len(token_ids) >= max_tokens:
+        why = "cut at max_tokens before the grammar finished"
+        if share > 0.5:
+            why += (
+                " (mostly whitespace: the compact default allows none, so the bounded allow_whitespace option was on)"
+            )
+    elif not text.strip():
+        why = "finished with an empty output"
+    elif not v["json_ok"]:
+        why = "finished but the text is not JSON"
+    else:
+        why = "JSON that fails the schema"
+    return (
+        f"{why}; finish={finish_reason}; tokens={len(token_ids)}/{max_tokens}; "
+        f"whitespace share={share:.2f}; raw={text[:160]!r}"
+    )
 
 
 def main() -> int:
@@ -109,7 +144,7 @@ def main() -> int:
                 n_gpu_layers=-1,
                 n_batch=128,
                 seed=args.seed,
-                backend="cuda",
+                backend=lib_backend_label(),
             ),
             adapters=(
                 AdapterSpec(name="probe-a", gguf_path=str(args.lora_a)),
@@ -122,11 +157,9 @@ def main() -> int:
     )
     try:
         after_load = gpu_snapshot()
-        require_gpu0_only(after_load)
-        from transformers import AutoTokenizer  # noqa: PLC0415
-
+        require_gpu0_only(after_load, before=gpu_before)
         resolved = _resolve_tokenizer(str(args.tokenizer_dir), allow_network=False)
-        tokenizer = AutoTokenizer.from_pretrained(resolved, local_files_only=True)
+        tokenizer = load_tokenizer(resolved)
         router.enable_grammar(tokenizer, Route.model_json_schema())
 
         # Mixed workload across base + probe-a (grammar is adapter-agnostic).

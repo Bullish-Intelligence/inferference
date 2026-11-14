@@ -14,7 +14,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -51,7 +51,9 @@ from .control import (
     FanLease,
     FanLeaseLike,
     normalize_power_profile,
+    read_cpu_state,
     read_power_state,
+    verify_cpu_epp,
     verify_power_profile,
 )
 from .preflight import (
@@ -80,14 +82,21 @@ from .server import (
     ServerProcess,
     build_command,
     list_devices,
+    merge_extra_args,
     wait_for_bindable_port,
 )
 from .spec import ExperimentSpec, SpecError, load_spec
+from .stop import StopRequest
 from .workload import (
+    AgentSession,
+    CorpusLane,
+    LaneScript,
     WorkloadError,
     WorkloadPlan,
+    assign_corpus_prompts,
     calibrate_prefill,
     chat_payload,
+    corpus_prompts,
     decode_payload,
     parse_workload,
     records_prompt,
@@ -95,7 +104,7 @@ from .workload import (
 )
 
 _CARD_DIR = re.compile(r"^card([0-9]+)$")
-_SERVER_TIMING_KEYS = ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms", "cache_n")
+_SERVER_TIMING_KEYS = ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms", "cache_n", "draft_n", "draft_n_accepted")
 _DEFAULT_HOST_PATHS = HostPaths()
 
 
@@ -156,6 +165,21 @@ class RunResult:
 class _ChatResult:
     record: dict[str, Any]
     validation_error: str | None
+    content: str = ""
+
+
+def gate_junctions(cards: Sequence[int], sample_cards: Iterable[Any]) -> dict[int, float]:
+    """Return the junction readings of the cards that the run uses.
+
+    The start gate waits for these cards only. A busy neighbour card does not
+    hold it. The thermal guard and the machine limit still watch every card.
+    A used card that the sample lacks returns an empty mapping, and the gate
+    refuses.
+    """
+    readings = {item.card: item.temperature_hotspot_c for item in sample_cards}
+    if any(card not in readings for card in cards):
+        return {}
+    return {card: readings[card] for card in cards}
 
 
 class _RunStopped(Exception):
@@ -166,10 +190,13 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _hash_file(path: Path) -> str:
+def _hash_file(path: Path, check_stop: Callable[[], None] | None = None) -> str:
+    """Hash a file in 1 MiB blocks. `check_stop` runs before each block and may raise."""
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
+            if check_stop is not None:
+                check_stop()
             digest.update(block)
     return digest.hexdigest()
 
@@ -221,6 +248,7 @@ def _send_chat(
     validation_kind: str,
     payload: Mapping[str, Any],
     expected: Mapping[str, Any] | None,
+    extra: Mapping[str, Any] | None = None,
 ) -> _ChatResult:
     payload_dict = dict(payload)
     payload_sha = write_request_body(run_dir, payload_dict)
@@ -322,6 +350,9 @@ def _send_chat(
         "seq": sequence,
         "payload_sha256": payload_sha,
         "response_sha256": response_sha,
+        # The raw body hash includes timing fields. This hash covers the
+        # generated text only, so two runs can compare output byte for byte.
+        "content_sha256": hashlib.sha256(result["content"].encode()).hexdigest(),
         "dispatch_utc": dispatch_utc,
         "dispatch_mono": dispatch_mono,
         "first_token_mono": first_token_mono,
@@ -335,7 +366,9 @@ def _send_chat(
         "server_timings": server_timings,
         "workload": workload,
     }
-    return _ChatResult(record=record, validation_error=validation_error)
+    if extra:
+        record.update(extra)
+    return _ChatResult(record=record, validation_error=validation_error, content=result["content"])
 
 
 def _tokenize_content(client: httpx.Client, run_dir: Path, content: str) -> tuple[int, str, str]:
@@ -408,6 +441,7 @@ def _run_one(
     model_hashes: dict[Path, str],
     sync: RunSync | None = None,
     model_hash_lock: threading.Lock | None = None,
+    stop_request: StopRequest | None = None,
 ) -> RunResult:
     if sample_interval_s <= 0:
         raise RunnerError(f"sample_interval_s must be positive, got {sample_interval_s}")
@@ -442,10 +476,20 @@ def _run_one(
     server_temp_log = run_dir / ".server-output"
     server_log_written = False
     server_stopped = False
+    # One lock covers the whole stop. The stop watcher and the `finally` block
+    # can both ask. The second caller waits, and it never sends a second SIGINT.
+    server_stop_lock = threading.Lock()
+    watcher_done = threading.Event()
+    stop_watcher: threading.Thread | None = None
     preflight_snapshot = None
     model_path: Path | None = None
     model_signature: tuple[int, int] | None = None
     card_ids: tuple[int, ...] | None = None
+    host_payload: dict[str, Any] = {
+        "cpu_epp_declared": spec.fixed.host.cpu_epp,
+        "cpu": None,
+        "server_threads": None,
+    }
     control_payload: dict[str, Any] = {
         "fan": {
             "requested_profile": spec.fixed.control.fan_profile,
@@ -461,6 +505,7 @@ def _run_one(
             "readback": {},
             "performance_level": {},
         },
+        "host": host_payload,
         "pp_table": {
             "declared_name": spec.fixed.control.pp_table.name if spec.fixed.control.pp_table is not None else "stock",
             "declared_sha256": spec.fixed.control.pp_table.sha256 if spec.fixed.control.pp_table is not None else None,
@@ -534,14 +579,34 @@ def _run_one(
 
     def stop_server() -> None:
         nonlocal server_stopped
-        if server is None or server_stopped:
+        with server_stop_lock:
+            if server is None or server_stopped:
+                return
+            try:
+                if server.alive():
+                    # Mark the stop only when a process exists to stop. A call
+                    # that comes before `start` must leave a later call free to act.
+                    server_stopped = True
+                    server.stop()
+            except (OSError, ServerError) as exc:
+                server_stopped = True
+                set_result("aborted", "server:stop", str(exc))
+
+    def watch_stop_request(request: StopRequest) -> None:
+        """Turn an outside stop request into this run's first event, then stop the server.
+
+        The watcher keeps asking until the server stops, so a server that starts
+        after the request still gets its one SIGINT.
+        """
+        while not watcher_done.is_set():
+            if request.wait(0.05):
+                break
+        else:
             return
-        server_stopped = True
-        try:
-            if server.alive():
-                server.stop()
-        except (OSError, ServerError) as exc:
-            set_result("aborted", "server:stop", str(exc))
+        set_result("aborted", f"signal:{request.reason}", f"{request.reason} asked the runner to stop")
+        while not watcher_done.is_set() and not server_stopped:
+            stop_server()
+            watcher_done.wait(0.05)
 
     def write_server_log() -> None:
         nonlocal server_log_written
@@ -644,6 +709,13 @@ def _run_one(
         except (ControlError, OSError) as exc:
             observed.append(("power_profile", str(exc)))
 
+        declared_cpu_epp = spec.fixed.host.cpu_epp
+        if declared_cpu_epp is not None:
+            try:
+                verify_cpu_epp(declared_cpu_epp, read_cpu_state(paths.cpu_root))
+            except ControlError as exc:
+                observed.append(("cpu_epp", str(exc)))
+
         try:
             generation = os.readlink(paths.current_system)
             if generation != snapshot.identity["nixos_generation"]:
@@ -671,6 +743,14 @@ def _run_one(
             set_result("invalid", f"drift:{field}", detail)
 
     try:
+        if stop_request is not None:
+            stop_watcher = threading.Thread(
+                target=watch_stop_request,
+                args=(stop_request,),
+                name="experiment-stop-watcher",
+                daemon=True,
+            )
+            stop_watcher.start()
         write_run_manifest(
             run_dir,
             experiment=spec.experiment,
@@ -691,7 +771,7 @@ def _run_one(
                 # run's hash and the large model file is hashed once.
                 with model_hash_lock if model_hash_lock is not None else contextlib.nullcontext():
                     if resolved not in cached_model_hash:
-                        cached_model_hash[resolved] = _hash_file(path)
+                        cached_model_hash[resolved] = _hash_file(path, raise_if_stopped)
                     return cached_model_hash[resolved]
 
             preflight_snapshot = preflight(
@@ -756,6 +836,14 @@ def _run_one(
         control_payload["power"]["performance_level"] = {
             str(card): state["performance_level"] for card, state in power_state.items()
         }
+        try:
+            cpu_state = read_cpu_state(paths.cpu_root)
+            control_payload["host"]["cpu"] = cpu_state
+            if spec.fixed.host.cpu_epp is not None:
+                verify_cpu_epp(spec.fixed.host.cpu_epp, cpu_state)
+        except ControlError as exc:
+            set_result("aborted", "control:cpu_epp", str(exc))
+            raise _RunStopped(str(exc)) from exc
 
         # GTT monitoring starts with the server's post-initialization baseline.
         monitor = SafetyMonitor(
@@ -802,7 +890,7 @@ def _run_one(
             raise _RunStopped(str(exc)) from exc
 
         try:
-            device_list = list_devices(target.server_bin, card=target.card, base_env=env)
+            device_list = list_devices(target.server_bin, card=target.card, base_env=env, stop=stop_event)
             write_text_artifact(run_dir, "list-devices.txt", device_list)
         except (ServerError, OSError, RunDirectoryError) as exc:
             set_result("aborted", "server:list_devices", str(exc))
@@ -810,7 +898,7 @@ def _run_one(
 
         raise_if_stopped()
         try:
-            wait_for_bindable_port(target.port)
+            wait_for_bindable_port(target.port, stop=stop_event)
         except ServerError as exc:
             set_result("aborted", "server:port", str(exc))
             raise _RunStopped(str(exc)) from exc
@@ -825,24 +913,30 @@ def _run_one(
             "run",
             "--",
         )
-        extra_args = {str(key): str(value) for key, value in preflight_snapshot.resolved_model.extra_args.items()}
-        command = build_command(
-            server_bin=target.server_bin,
-            model=model_path,
-            alias=preflight_snapshot.resolved_model.name,
-            card=target.card,
-            port=target.port,
-            slots=slots,
-            tokens_per_slot=spec.fixed.context.tokens_per_slot,
-            batch=spec.fixed.batch.size,
-            ubatch=spec.fixed.batch.ubatch,
-            cache_k=spec.fixed.cache.k,
-            cache_v=spec.fixed.cache.v,
-            extra_args=extra_args,
-            wrapper=wrapper,
-            base_env=env,
-            fan_status_file=paths.fan_status_file,
-        )
+        spec_extra_args = {} if spec.fixed.server is None else spec.fixed.server.extra_args
+        try:
+            extra_args = merge_extra_args(preflight_snapshot.resolved_model.extra_args, spec_extra_args)
+            control_payload["host"]["server_threads"] = extra_args.get("threads")
+            command = build_command(
+                server_bin=target.server_bin,
+                model=model_path,
+                alias=preflight_snapshot.resolved_model.name,
+                card=target.card,
+                port=target.port,
+                slots=slots,
+                tokens_per_slot=spec.fixed.context.tokens_per_slot,
+                batch=spec.fixed.batch.size,
+                ubatch=spec.fixed.batch.ubatch,
+                cache_k=spec.fixed.cache.k,
+                cache_v=spec.fixed.cache.v,
+                extra_args=extra_args,
+                wrapper=wrapper,
+                base_env=env,
+                fan_status_file=paths.fan_status_file,
+            )
+        except ServerError as exc:
+            set_result("aborted", "server:extra_args", str(exc))
+            raise _RunStopped(str(exc)) from exc
         server = ServerProcess(command, server_temp_log)
         try:
             server.start()
@@ -949,6 +1043,8 @@ def _run_one(
         pair_arrive("loaded")
         raise_if_stopped()
 
+        gate_cards = (target.card,) if spec.fixed.placement is None else spec.fixed.placement.cards
+
         def read_junctions() -> Mapping[int, float]:
             if stop_event.is_set():
                 raise _RunStopped("a safety or telemetry event stopped the run during the start gate")
@@ -956,7 +1052,7 @@ def _run_one(
                 sample = latest_sample[0]
             if sample is None:
                 return {}
-            return {card.card: card.temperature_hotspot_c for card in sample.cards}
+            return gate_junctions(gate_cards, sample.cards)
 
         try:
             gate_result = start_gate(
@@ -996,12 +1092,12 @@ def _run_one(
         for workload_name in spec.workloads:
             raise_if_stopped()
             plan = parse_workload(workload_name)
-            concurrency = factor_lanes if plan.concurrency_from_factor else 1
+            concurrency = factor_lanes if plan.concurrency_from_factor else (plan.sessions or 1)
             expected: Mapping[str, Any] | None = None
             messages: tuple[dict[str, str], ...] | None = None
             calibration: dict[str, Any] | None = None
             calibration_hashes: list[dict[str, str]] = []
-            if plan.kind == "prefill":
+            if plan.kind in ("prefill", "agent_turns"):
                 assert plan.target_prompt_tokens is not None
                 try:
                     with httpx.Client(base_url=f"http://127.0.0.1:{target.port}", timeout=http_timeout_s) as client:
@@ -1024,11 +1120,35 @@ def _run_one(
                         # their hashes with the calibration metadata too.
                         calibration["request_sha256"] = [item["request"] for item in calibration_hashes]
                         calibration["response_sha256"] = [item["response"] for item in calibration_hashes]
-                    _, expected = records_prompt(calibration["record_count"])
-                    messages = ({"role": "user", "content": content},)
+                    if plan.kind == "prefill":
+                        _, expected = records_prompt(calibration["record_count"])
+                        messages = ({"role": "user", "content": content},)
                 except (WorkloadError, RunnerError, httpx.HTTPError) as exc:
                     set_result("aborted", "server:tokenize", str(exc))
                     raise _RunStopped(str(exc)) from exc
+
+            lane_scripts: dict[int, LaneScript] = {}
+            if plan.kind == "agent_turns":
+                assert calibration is not None and plan.sessions is not None and plan.turns is not None
+                lane_scripts = {
+                    session: AgentSession(
+                        session,
+                        records_prompt(calibration["record_count"], salt=session)[0],
+                        turns=plan.turns,
+                        model_alias=alias,
+                    )
+                    for session in range(plan.sessions)
+                }
+            if plan.corpus_set is not None:
+                try:
+                    prompts = corpus_prompts(plan.corpus_set)
+                except WorkloadError as exc:
+                    set_result("aborted", "preflight:workloads", str(exc))
+                    raise _RunStopped(str(exc)) from exc
+                lane_scripts = {
+                    lane: CorpusLane(items, model_alias=alias)
+                    for lane, items in enumerate(assign_corpus_prompts(prompts, concurrency))
+                }
 
             pair_arrive(f"stage:{workload_name}")
             raise_if_stopped()
@@ -1045,8 +1165,10 @@ def _run_one(
                 current_deadline: float = stage_deadline,
                 current_messages: tuple[dict[str, str], ...] | None = messages,
                 current_expected: Mapping[str, Any] | None = expected,
+                current_scripts: dict[int, LaneScript] = lane_scripts,
             ) -> list[dict[str, Any]]:
                 records: list[dict[str, Any]] = []
+                script = current_scripts.get(lane)
                 try:
                     with httpx.Client(base_url=f"http://127.0.0.1:{target.port}", timeout=http_timeout_s) as client:
                         sequence = 0
@@ -1054,7 +1176,14 @@ def _run_one(
                             if current_plan.kind == "soak" and time.monotonic() >= current_deadline:
                                 break
                             seed = 1000 + lane + sequence * current_concurrency
-                            if current_plan.kind == "prefill":
+                            extra: Mapping[str, Any] | None = None
+                            if script is not None:
+                                step = script.next_step(sequence)
+                                if step is None:
+                                    break
+                                payload = step.payload
+                                extra = step.extra
+                            elif current_plan.kind == "prefill":
                                 request_messages = current_messages or ()
                                 payload = chat_payload(
                                     request_messages,
@@ -1077,13 +1206,18 @@ def _run_one(
                                 validation_kind=current_plan.kind,
                                 payload=payload,
                                 expected=current_expected,
+                                extra=extra,
                             )
+                            if script is not None:
+                                script.annotate(sent.record)
                             records.append(sent.record)
                             if sent.validation_error is not None:
                                 set_result("aborted", f"output:{request_id}", sent.validation_error)
                                 break
                             sequence += 1
-                            if current_plan.kind != "soak":
+                            if script is not None:
+                                script.observe(sent.content)
+                            elif current_plan.kind != "soak":
                                 break
                 except RunnerError as exc:
                     with result_lock:
@@ -1151,6 +1285,11 @@ def _run_one(
         set_result("aborted", "server:runner", f"unexpected runner error: {exc}")
     finally:
         stop_event.set()
+        watcher_done.set()
+        if stop_watcher is not None:
+            # The watcher may be inside `server.stop`. Wait for it, so the
+            # server has one stop and the log below is complete.
+            stop_watcher.join()
         if sync is not None:
             # A departed peer no longer holds up this run's later barriers.
             # Depart before the load slot opens, so a waiting peer sees a lost
@@ -1217,6 +1356,7 @@ def run_one(
     sample_interval_s: float = 0.25,
     fan_lease_factory: Callable[[str], FanLeaseLike] = FanLease,
     http_timeout_s: float = 900,
+    stop_request: StopRequest | None = None,
 ) -> RunResult:
     """Run one item from `schedule(spec)` and return its artifact directory."""
     spec, spec_sha256 = _load_spec_bytes(spec_path)
@@ -1236,6 +1376,7 @@ def run_one(
         fan_lease_factory=fan_lease_factory,
         http_timeout_s=http_timeout_s,
         model_hashes={},
+        stop_request=stop_request,
     )
 
 
@@ -1250,14 +1391,20 @@ def run_experiment(
     sample_interval_s: float = 0.25,
     fan_lease_factory: Callable[[str], FanLeaseLike] = FanLease,
     http_timeout_s: float = 900,
+    stop_request: StopRequest | None = None,
 ) -> tuple[RunResult, ...]:
-    """Run scheduled conditions until the first refusal or machine stop."""
+    """Run scheduled conditions until the first refusal or machine stop.
+
+    A set `stop_request` stops the run that is active and starts no later run.
+    """
     spec, spec_sha256 = _load_spec_bytes(spec_path)
     environment = dict(os.environ if env is None else env)
     model_hashes: dict[Path, str] = {}
     results = []
     scheduled_runs = schedule(spec)
     for index, scheduled_run in enumerate(scheduled_runs):
+        if stop_request is not None and stop_request.is_set():
+            break
         result = _run_one(
             spec,
             spec_sha256,
@@ -1271,6 +1418,7 @@ def run_experiment(
             fan_lease_factory=fan_lease_factory,
             http_timeout_s=http_timeout_s,
             model_hashes=model_hashes,
+            stop_request=stop_request,
         )
         results.append(result)
         if result.state not in {"completed", "bounded"}:

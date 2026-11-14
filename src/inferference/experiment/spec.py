@@ -20,6 +20,16 @@ each card, never split across cards, and runs both together. `power_cap_w` and
 `arm_bound_c` apply to each listed card. A spec without `placement` is a
 single-card spec, and its condition digest is unchanged (see `conditions.py`).
 
+It adds a fourth optional key, `fixed.server.extra_args`: server flags that
+the arm sets. It maps a flag name without dashes to a string value. An absent
+`server` block stays out of the condition digest, like `placement`. A present
+block is part of the digest. The runner merges it with the `extra_args` of the
+model YAML.
+
+`fixed.host.cpu_epp` is optional. When it is present, every CPU must read that
+energy performance preference, or the run does not start. It is part of the
+condition digest only when present.
+
 It also carries three identity fields: `ModelFixed.sha256`,
 `BuildFixed.build_id`, and `BuildFixed.features`. Each is optional. A preflight
 check refuses when the matching `*_must_match` flag is set and the value is
@@ -37,6 +47,8 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, SerializerFunctionWrapHandler, StrictInt, model_serializer, model_validator
+
+from .server import refused_flag_keys
 
 SCHEMA_VERSION = 1
 
@@ -58,6 +70,7 @@ __all__ = [
     "PlacementFixed",
     "Replication",
     "SafetyFixed",
+    "ServerFixed",
     "SpecError",
     "StartGateFixed",
 ]
@@ -172,7 +185,28 @@ class StartGateFixed(_Strict):
 
 
 class HostFixed(_Strict):
+    """Host limits. `cpu_epp` is the energy performance preference that every CPU must read.
+
+    The host owns that setting. The runner reads it and refuses the run on a
+    mismatch. An absent `cpu_epp` stays out of the dump, so the condition
+    digest of a spec without it does not change.
+    """
+
     loadavg_1m_max: float
+    cpu_epp: str | None = None
+
+    @model_validator(mode="after")
+    def _cpu_epp_is_a_name(self) -> HostFixed:
+        if self.cpu_epp is not None and not self.cpu_epp.strip():
+            raise SpecError("fixed.host.cpu_epp must not be empty")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_cpu_epp(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if data.get("cpu_epp") is None:
+            data.pop("cpu_epp", None)
+        return data
 
 
 class PlacementFixed(_Strict):
@@ -198,6 +232,30 @@ class PlacementFixed(_Strict):
         return self
 
 
+class ServerFixed(_Strict):
+    """Server flags that this spec sets for every condition.
+
+    `extra_args` maps a flag name without dashes to a string value:
+    `{"threads": "2"}` becomes `--threads 2`. The runner refuses a flag that
+    it sets itself (or an alias of one), a key with `=`, and a key that the
+    model YAML sets to another value.
+    """
+
+    extra_args: dict[str, str]
+
+    @model_validator(mode="after")
+    def _keys_are_bare_flag_names(self) -> ServerFixed:
+        for key in self.extra_args:
+            if not key or key.startswith("-") or any(char.isspace() for char in key):
+                raise SpecError(f"fixed.server.extra_args key {key!r} must be a flag name without dashes or spaces")
+            if "=" in key:
+                raise SpecError(f"fixed.server.extra_args key {key!r} must not contain '='; put the value in the map")
+        refused = refused_flag_keys(list(self.extra_args))
+        if refused:
+            raise SpecError(f"fixed.server.extra_args repeats flag(s) that the runner sets itself: {refused}")
+        return self
+
+
 class Fixed(_Strict):
     """Every factor held constant across every condition in this spec."""
 
@@ -211,6 +269,7 @@ class Fixed(_Strict):
     start_gate: StartGateFixed
     host: HostFixed
     placement: PlacementFixed | None = None
+    server: ServerFixed | None = None
 
     @model_validator(mode="after")
     def _placement_keeps_the_stock_table(self) -> Fixed:
@@ -223,12 +282,14 @@ class Fixed(_Strict):
         return self
 
     @model_serializer(mode="wrap")
-    def _omit_absent_placement(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        # An absent placement is not part of the block. This keeps the digest
-        # and `declaration.json` of every single-card spec as they were.
+    def _omit_absent_options(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # An absent placement or server block is not part of the dump. This
+        # keeps the digest and `declaration.json` of every spec that does not
+        # declare them as they were.
         data: dict[str, Any] = handler(self)
-        if data.get("placement") is None:
-            data.pop("placement", None)
+        for key in ("placement", "server"):
+            if data.get(key) is None:
+                data.pop(key, None)
         return data
 
 

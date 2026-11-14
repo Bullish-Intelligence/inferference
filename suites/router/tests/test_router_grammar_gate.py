@@ -11,8 +11,8 @@ Gate (fail-closed, deterministic greedy):
   against the routing schema (across base + probe-a); the unconstrained run is
   reported for comparison (what the grammar buys).
 
-GPU-only: skips (never fails) when the env lacks CUDA-offload lib / model /
-probe adapters / the local Ornith tokenizer.
+GPU-only: skips (never fails) when the env lacks GPU-offload lib / model /
+probe adapters / the local default-role tokenizer.
 """
 
 from __future__ import annotations
@@ -22,22 +22,22 @@ from pathlib import Path
 import pytest
 from tests.asset_paths import asset_path
 
-from inferference.benchkit.gates import _resolve_tokenizer
-from inferference.benchkit.runners.router_grammar import INSTR, USER_TASKS, Route, validate
-from inferference.gpu_env import gpu_env_ready
+from inferference.benchkit.gates import _resolve_tokenizer, load_tokenizer
+from inferference.benchkit.runners.router_grammar import INSTR, USER_TASKS, Route, diagnose, validate
+from inferference.gpu_env import GPU_BACKEND_LABEL, gpu_env_ready
 from inferference.models import EngineConfig
 from inferference.router import AdapterSpec, MultiLoRARouter, RouterConfig, RouteRequest
 
 _REPO = Path(__file__).resolve().parents[3]
-_MODEL = asset_path("MODEL_ORNITH")
+_MODEL = asset_path("MODEL_DEFAULT")
 _PROBE_DIR = asset_path("MODEL_PROBE_DIR")
 _LORA_A = _PROBE_DIR / "probe-a.gguf"
 _LORA_B = _PROBE_DIR / "probe-b.gguf"
-_TOKENIZER_DIR = asset_path("TOKENIZER_ORNITH")
+_TOKENIZER_DIR = asset_path("TOKENIZER_DEFAULT")
 
 
 def _ready() -> bool:
-    # Backend-agnostic: CUDA_VISIBLE_DEVICES means nothing to the Vulkan build,
+    # Backend-agnostic: a vendor device variable means nothing to a build for another backend,
     # and requiring it here SKIPS this gate on a rig that can run it.
     if not gpu_env_ready():
         return False
@@ -52,20 +52,16 @@ def _ready() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _ready(),
-    reason="requires CUDA-offload lib + Ornith model + probe adapters + local Ornith tokenizer",
+    reason="requires GPU-offload lib + MODEL_DEFAULT + probe adapters + TOKENIZER_DEFAULT",
 )
 
 
 def test_grammar_constrained_routing_is_schema_valid() -> None:
-    from transformers import AutoTokenizer  # noqa: PLC0415
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        _resolve_tokenizer(str(_TOKENIZER_DIR), allow_network=False), local_files_only=True
-    )
+    tokenizer = load_tokenizer(_resolve_tokenizer(str(_TOKENIZER_DIR), allow_network=False))
     router = MultiLoRARouter(
         RouterConfig(
             engine=EngineConfig(
-                model_path=str(_MODEL), n_ctx=4096, n_gpu_layers=-1, n_batch=128, seed=17018, backend="cuda"
+                model_path=str(_MODEL), n_ctx=4096, n_gpu_layers=-1, n_batch=128, seed=17018, backend=GPU_BACKEND_LABEL
             ),
             adapters=(
                 AdapterSpec(name="probe-a", gguf_path=str(_LORA_A)),
@@ -96,8 +92,19 @@ def test_grammar_constrained_routing_is_schema_valid() -> None:
             uv = validate(ug.text or "")
             all_valid = all_valid and cv["schema_ok"]
             unconstrained_valid += 1 if uv["schema_ok"] else 0
-            rows.append({"rid": cg.request_id, "schema_ok": cv["schema_ok"], "value": cv["value"]})
-        assert all_valid, f"constrained validity broken: {[r for r in rows if not r['schema_ok']]}"
+            rows.append(
+                {
+                    "rid": cg.request_id,
+                    "schema_ok": cv["schema_ok"],
+                    "value": cv["value"],
+                    # The check stays as strict as before. The diagnosis only says WHY an output failed.
+                    "diagnosis": diagnose(cg.text or "", cg.finish_reason, cg.token_ids, 48),
+                }
+            )
+        assert all_valid, (
+            f"constrained validity broken: {[r for r in rows if not r['schema_ok']]}; "
+            f"unconstrained valid {unconstrained_valid}/{len(rows)}"
+        )
         assert unconstrained_valid <= len(rows)  # informational
     finally:
         router.close()

@@ -14,7 +14,16 @@ ported library's :class:`inferference.router.MultiLoRARouter`.
     DIFFERENT adapter's isolated output; otherwise it is batched-greedy FP
     nondeterminism and is REPORTED, never failed.
 
-GPU-gated like the reference gates (CUDA facility, P2 fork lib, model + probe
+On a logit-tolerance backend (the logits depend on the batch composition, see
+``inferference.mixed_batch_gates``) the token-exact mixed-batch gate cannot hold. The
+mixed-batch verdict there is three exact gates: the same composition twice
+bit-identical; the other sequences' adapters changed with the tokens held fixed leave each
+target's logits bit-identical (bleed-through, and each neighbour must react to its adapter);
+and the isolated ``seq_routed`` run bit-identical to the isolated ``context_pool`` run
+(parity of the adapter path). The mixed batch against the isolated runs is MEASURED and
+recorded, never gated (the output says so). An unknown backend fails.
+
+GPU-gated like the reference gates (GPU env, P2 fork lib, model + probe
 adapters); on a stock lib the whole module skips — fail-closed, never a hard
 failure. Token-exact checks use batch-1 ground truth + known-flip reporting.
 """
@@ -24,17 +33,31 @@ from __future__ import annotations
 import pytest
 from tests.asset_paths import asset_path
 
-from inferference.gpu_env import gpu_env_ready
+from inferference.benchkit.trace_router import TraceRouter
+from inferference.gpu_env import GPU_BACKEND_LABEL, gpu_env_ready
+from inferference.mixed_batch_gates import (
+    TOKEN_EXACT,
+    check_parity,
+    collect_isolated,
+    collect_isolated_forced,
+    collect_mixed,
+    gate_determinism,
+    gate_isolation,
+    gate_mode,
+    pairs_from_traces,
+    report_measurement,
+    require,
+)
 from inferference.router import Backend
 
-_MODEL_PATH = asset_path("LLAMA_TEST_MODEL")
-_PROBE_DIR = asset_path("PROJECT20_PROBE_DIR")
+_MODEL_PATH = asset_path("MODEL_DEFAULT")
+_PROBE_DIR = asset_path("MODEL_PROBE_DIR")
 _LORA_A = _PROBE_DIR / "probe-a.gguf"
 _LORA_B = _PROBE_DIR / "probe-b.gguf"
 
 
 def _fork_gpu_ready() -> bool:
-    # Backend-agnostic: CUDA_VISIBLE_DEVICES means nothing to the Vulkan build,
+    # Backend-agnostic: a vendor device variable means nothing to a build for another backend,
     # and requiring it here SKIPS this gate on a rig that can run it.
     if not gpu_env_ready():
         return False
@@ -51,7 +74,10 @@ def _fork_gpu_ready() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _fork_gpu_ready(),
-    reason="requires P2 fork GPU env (LLAMA_CPP_LIB_PATH -> fork lib, CUDA, model, probe adapters)",
+    reason=(
+        "requires P2 fork GPU env (LLAMA_CPP_LIB_PATH -> fork lib, a GPU device, "
+        "MODEL_DEFAULT, MODEL_PROBE_DIR adapters)"
+    ),
 )
 
 _N_CTX, _N_SEQ_MAX, _MAX_TOKENS, _SEED = 2048, 8, 32, 17018
@@ -77,14 +103,19 @@ def _adapters():
     )
 
 
-def _router(backend: Backend):
+def _router(backend: Backend, cls: type | None = None):
     from inferference.models import EngineConfig
     from inferference.router import MultiLoRARouter, RouterConfig
 
-    return MultiLoRARouter(
+    return (cls or MultiLoRARouter)(
         RouterConfig(
             engine=EngineConfig(
-                model_path=str(_MODEL_PATH), n_ctx=_N_CTX, n_gpu_layers=-1, n_batch=128, seed=_SEED, backend="cuda"
+                model_path=str(_MODEL_PATH),
+                n_ctx=_N_CTX,
+                n_gpu_layers=-1,
+                n_batch=128,
+                seed=_SEED,
+                backend=GPU_BACKEND_LABEL,
             ),
             adapters=_adapters(),
             n_seq_max=_N_SEQ_MAX,
@@ -118,7 +149,7 @@ def _summarize(
     return match_count, divs
 
 
-def test_p2_mixed_batch_verdict_go() -> None:
+def _token_exact_mixed_batch_verdict() -> None:
     """run_p2_mixed_batch semantics: one mixed-batch routed decode, token-exact.
 
     The four-sequence mixed wave (probe-a / probe-b / base(-1) / probe-a) decoded
@@ -165,6 +196,53 @@ def test_p2_mixed_batch_verdict_go() -> None:
     assert distinct, "the mixed batch is trivially uniform — adapters not applied per-seq"
     assert all_match, f"mixed-batch routed decode not token-exact vs isolated baselines: {rows}"
     print("[p2] verdict GO — routed == isolated baseline, outputs distinct")
+
+
+def _logit_mixed_batch_verdict() -> None:
+    """The mixed-batch verdict on a logit-tolerance backend: three exact gates, all must hold."""
+    from inferference.router import BASE, RouteRequest
+
+    prompts = _PROMPTS[:4]
+    adapters: list[str | None] = ["probe-a", "probe-b", BASE, "probe-a"]
+    requests = [RouteRequest(prompt=prompts[i], adapter=adapters[i], max_tokens=_MAX_TOKENS) for i in range(4)]
+
+    pool = _router("context_pool", TraceRouter)
+    try:
+        iso = collect_isolated(pool, requests)  # the reference: batch-1, clean state, proven adapter path
+    finally:
+        pool.close()
+
+    fork = _router("seq_routed", TraceRouter)
+    try:
+        assert fork.backend == "seq_routed"
+        assert isinstance(fork, TraceRouter)
+        require(gate_determinism(fork, requests), "determinism")
+        # bleed-through: each sequence is the target once, the others change adapter
+        for target in range(len(requests)):
+            require(gate_isolation(fork, requests, pool=_POOL, target=target), f"bleed-through, target {target}")
+        mixed = collect_mixed(fork, requests, iso)
+        report_measurement(
+            "p2 mixed batch: seq_routed mixed against context_pool alone",
+            pairs_from_traces(requests, iso, mixed, "mixed4"),
+        )
+        # adapter-path parity: one request alone, seq_routed against context_pool, bit-identical
+        fork_iso = collect_isolated_forced(fork, requests, iso)
+        parity = [
+            f for r, a, b in zip(requests, iso, fork_iso, strict=True) for f in check_parity(f"{r.adapter}", a, b)
+        ]
+        require(parity, "adapter-path parity: seq_routed alone differs from context_pool alone")
+        free = [t.tokens for t in collect_mixed(fork, requests)]
+    finally:
+        fork.close()
+    assert len(set(free)) > 1, "the mixed batch is trivially uniform — adapters not applied per-seq"
+    print("[p2] verdict GO — determinism, bleed-through and parity hold; outputs distinct; equivalence measured")
+
+
+def test_p2_mixed_batch_verdict_go() -> None:
+    if gate_mode() == TOKEN_EXACT:
+        _token_exact_mixed_batch_verdict()
+    else:
+        _logit_mixed_batch_verdict()
 
 
 def test_p2_correctness_check_modes_sweep() -> None:

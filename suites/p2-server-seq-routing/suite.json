@@ -5,7 +5,16 @@
     "probe": "probes/capability.sh",
     "required": true
   },
-  "env": { "GPU": true, "MODEL": "Nanbeige4.2-3B-UD-Q4_K_XL.gguf", "LIB": true, "SERVER": true },
+  "env": {
+    "GPU": true,
+    "MODEL_ROLE": "nanbeige",
+    "MODEL_NEEDS": "a nanbeige-architecture GGUF and nanbeige LoRA probe adapters",
+    "MODEL_VARS": [
+      "MODEL_NANBEIGE_LORA_PROBE"
+    ],
+    "LIB": true,
+    "SERVER": true
+  },
   "tests": [
     "tests/test_seq_routing_refusals.py",
     "tests/test_routing_smoke.py"

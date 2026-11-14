@@ -115,34 +115,34 @@ def _spec(path: Path):
     return load_spec(path)
 
 
-# Computed from `032-v620-board-power-cap/arm-<W>w.yaml` before
+# Computed from the single-card power-cap arm specs before
 # `fixed.placement` existed. A change to one of these digests means a change to
 # the identity of every run already on disk.
-_GOLDEN_032_FIXED_DIGESTS = {
+_GOLDEN_POWER_CAP_FIXED_DIGESTS = {
     160: "eb321ea886c153b00523d17e3a125f8d914e652815c1df27e1c18c7701027952",
     180: "0a56f4d279fe36702620dd7d584950ec2810c3d160b7aafaf5c02065b89d6f16",
     250: "328317ee3bc06d598e3c7147898affc13bd92deae0e309522cecae064a4fb162",
 }
 
 
-def test_hash_fixed_keeps_the_digest_of_every_032_arm() -> None:
-    for watts, digest in _GOLDEN_032_FIXED_DIGESTS.items():
+def test_hash_fixed_keeps_the_digest_of_every_power_cap_arm() -> None:
+    for watts, digest in _GOLDEN_POWER_CAP_FIXED_DIGESTS.items():
         spec = _spec(_SPECS / "032-v620-board-power-cap" / f"arm-{watts}w.yaml")
         assert hash_fixed(spec.fixed) == digest, f"arm {watts} W changed its fixed digest"
         assert "placement" not in spec.fixed.model_dump(mode="json")
 
 
 # Computed from the single-card arms on `main` at 7220e5cb, before
-# `fixed.placement` existed. The 160, 180, and 250 W arms share the 032 digests.
-_GOLDEN_033_FIXED_DIGESTS = {
-    **_GOLDEN_032_FIXED_DIGESTS,
+# `fixed.placement` existed. The 160, 180, and 250 W arms share the power-cap digests.
+_GOLDEN_COOLING_FIXED_DIGESTS = {
+    **_GOLDEN_POWER_CAP_FIXED_DIGESTS,
     200: "87c87996458eb2f3ea2e314842cf9bbcf5799039dcf30f5c7356e74b7f040ec0",
     220: "c72146969110d1c68cd32e4c55f0b7004d8bb9e329ee506dc8c14cae1c9c9d1e",
 }
 
 
-def test_hash_fixed_keeps_the_digest_of_every_033_single_card_arm() -> None:
-    for watts, digest in _GOLDEN_033_FIXED_DIGESTS.items():
+def test_hash_fixed_keeps_the_digest_of_every_cooling_single_card_arm() -> None:
+    for watts, digest in _GOLDEN_COOLING_FIXED_DIGESTS.items():
         spec = _spec(_SPECS / "033-v620-cooling-v2-cap" / f"arm-{watts}w.yaml")
         assert hash_fixed(spec.fixed) == digest, f"arm {watts} W changed its fixed digest"
         assert "placement" not in spec.fixed.model_dump(mode="json")
@@ -160,3 +160,29 @@ def test_hash_fixed_changes_when_a_placement_is_declared() -> None:
     assert hash_fixed(plain.fixed) != hash_fixed(paired.fixed)
     assert hash_fixed(paired.fixed) != hash_fixed(swapped.fixed)
     assert paired.fixed.model_dump(mode="json")["placement"]["cards"] == [0, 1]
+
+
+def test_hash_fixed_ignores_an_absent_server_block_and_sees_a_present_one() -> None:
+    plain = ExperimentSpec.model_validate(_spec_dict())
+    raw = _spec_dict()
+    raw["fixed"]["server"] = {"extra_args": {"threads": "2"}}
+    two = ExperimentSpec.model_validate(raw)
+    raw["fixed"]["server"] = {"extra_args": {"threads": "1"}}
+    one = ExperimentSpec.model_validate(raw)
+
+    assert "server" not in plain.fixed.model_dump(mode="json")
+    assert hash_fixed(plain.fixed) != hash_fixed(two.fixed)
+    assert hash_fixed(two.fixed) != hash_fixed(one.fixed)
+    assert hash_fixed(two.fixed) == hash_fixed(ExperimentSpec.model_validate(two.model_dump(mode="json")).fixed)
+
+
+def test_hash_fixed_ignores_an_absent_cpu_epp_and_sees_a_present_one() -> None:
+    plain = ExperimentSpec.model_validate(_spec_dict())
+    raw = _spec_dict()
+    raw["fixed"]["host"]["cpu_epp"] = "performance"
+    performance = ExperimentSpec.model_validate(raw)
+    raw["fixed"]["host"]["cpu_epp"] = "power"
+    power = ExperimentSpec.model_validate(raw)
+
+    assert hash_fixed(plain.fixed) != hash_fixed(performance.fixed)
+    assert hash_fixed(performance.fixed) != hash_fixed(power.fixed)

@@ -3,7 +3,7 @@
 No hardware and no background thread. A "fake watchdog" is one step function,
 `_watchdog_step`, that the test calls explicitly: it reads the request file
 (if any), applies `arbitrate` -- the module's own reference rule -- and writes
-the status file atomically, exactly as the real nix-meta watchdog must.
+the status file atomically, exactly as the real host watchdog must.
 `FanLease`'s injected `sleep` callback drives that step function, so a poll
 loop in `acquire()`/`release()` advances the fake watchdog without any real
 waiting or threading.
@@ -28,7 +28,9 @@ from inferference.experiment.control import (
     normalize_power_profile,
     parse_request,
     parse_status,
+    read_cpu_state,
     read_power_state,
+    verify_cpu_epp,
     verify_power_profile,
 )
 
@@ -507,3 +509,80 @@ def test_members_release_once_and_the_last_member_restores() -> None:
     assert "deferred" not in second.release()
     assert real.calls == ["acquire", "release"]
     assert shared.holders == 0
+
+
+def make_cpu_root(
+    root: Path,
+    *,
+    cpus: int = 2,
+    governor: str = "powersave",
+    epp: str | None = "balance_performance",
+    intel_pstate: bool = True,
+    no_turbo: str = "0",
+) -> Path:
+    """Fabricate a `/sys/devices/system/cpu` tree under `root`."""
+    for cpu in range(cpus):
+        cpufreq = root / f"cpu{cpu}" / "cpufreq"
+        cpufreq.mkdir(parents=True)
+        (cpufreq / "scaling_governor").write_text(f"{governor}\n")
+        if epp is not None:
+            (cpufreq / "energy_performance_preference").write_text(f"{epp}\n")
+    # Entries that are not CPUs must not count.
+    (root / "cpufreq").mkdir()
+    (root / "cpuidle").mkdir()
+    if intel_pstate:
+        (root / "intel_pstate").mkdir()
+        (root / "intel_pstate" / "status").write_text("active\n")
+        (root / "intel_pstate" / "no_turbo").write_text(f"{no_turbo}\n")
+    return root
+
+
+def test_read_cpu_state_reads_governor_epp_and_intel_pstate(tmp_path: Path) -> None:
+    root = make_cpu_root(tmp_path / "cpu", cpus=3, no_turbo="1")
+    (root / "cpu2" / "cpufreq" / "energy_performance_preference").write_text("performance\n")
+
+    state = read_cpu_state(root)
+
+    assert state == {
+        "governor": {"0": "powersave", "1": "powersave", "2": "powersave"},
+        "epp": {"0": "balance_performance", "1": "balance_performance", "2": "performance"},
+        "intel_pstate_status": "active",
+        "no_turbo": "1",
+    }
+
+
+def test_read_cpu_state_reads_none_for_a_missing_file(tmp_path: Path) -> None:
+    root = make_cpu_root(tmp_path / "cpu", epp=None, intel_pstate=False)
+
+    state = read_cpu_state(root)
+
+    assert state["epp"] == {"0": None, "1": None}
+    assert state["intel_pstate_status"] is None
+    assert state["no_turbo"] is None
+
+
+def test_read_cpu_state_orders_cpus_by_number(tmp_path: Path) -> None:
+    root = make_cpu_root(tmp_path / "cpu", cpus=12)
+
+    assert list(read_cpu_state(root)["governor"]) == [str(cpu) for cpu in range(12)]
+
+
+def test_verify_cpu_epp_accepts_a_match(tmp_path: Path) -> None:
+    state = read_cpu_state(make_cpu_root(tmp_path / "cpu", epp="performance"))
+
+    verify_cpu_epp("performance", state)
+
+
+def test_verify_cpu_epp_refuses_a_mismatch_and_names_the_cpus(tmp_path: Path) -> None:
+    root = make_cpu_root(tmp_path / "cpu", epp="performance")
+    (root / "cpu1" / "cpufreq" / "energy_performance_preference").write_text("power\n")
+
+    with pytest.raises(ControlError, match="cpu_epp mismatch.*'1': 'power'"):
+        verify_cpu_epp("performance", read_cpu_state(root))
+
+
+def test_verify_cpu_epp_refuses_a_host_with_no_epp_file(tmp_path: Path) -> None:
+    state = read_cpu_state(make_cpu_root(tmp_path / "cpu", epp=None))
+
+    with pytest.raises(ControlError, match="no CPU exposes"):
+        verify_cpu_epp("performance", state)

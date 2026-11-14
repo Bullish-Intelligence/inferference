@@ -5,7 +5,19 @@
     "probe": "probes/capability.sh",
     "required": true
   },
-  "env": { "GPU": true, "MODEL": "Ornith-1.0-9B-UD-Q4_K_XL.gguf", "LIB": true },
+  "env": {
+    "GPU": true,
+    "MODEL_ROLE": "default",
+    "MODEL_NEEDS": "any model and LoRA probe adapters of the same architecture",
+    "MODEL_VARS": [
+      "MODEL_PROBE_DIR"
+    ],
+    "LIB": true,
+    "GPU_TESTS": [
+      "tests/test_seq_routing_gpu.py",
+      "tests/test_p2_gates.py"
+    ]
+  },
   "tests": [
     "tests/test_seq_routing.py",
     "tests/test_seq_routing_gpu.py",

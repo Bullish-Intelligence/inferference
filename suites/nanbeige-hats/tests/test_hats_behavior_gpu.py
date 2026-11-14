@@ -10,7 +10,7 @@ Drives the hats surface (``LoopRoutingBinding``) against a pointed-at hats lib
       the output ~unchanged (R4 sanity).
 
 The behavioral assertions run through ``ci/canary/hats-validate.py s5`` (the
-same harness that produced the Task 3 Q6 evidence) against the minimal nanbeige
+same harness) against the minimal nanbeige
 adapters in the rig cache (``nanbeige-lora-probe/suite-*.gguf``). The minimal
 coverage (blk.3 x attn_k/v/output) is deliberate: a full-coverage adapter
 exposes a pre-existing stock CUDA LoRA-path NaN (both b10103 and b10233 anchors,
@@ -59,7 +59,10 @@ def _hats_gpu_ready() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _hats_gpu_ready(),
-    reason="requires hats fork GPU env (LLAMA_CPP_LIB_PATH -> hats lib, CUDA, model, suite adapters)",
+    reason=(
+        "requires hats fork GPU env (LLAMA_CPP_LIB_PATH -> hats lib, a GPU device, "
+        "MODEL_NANBEIGE, MODEL_NANBEIGE_LORA_PROBE adapters)"
+    ),
 )
 
 

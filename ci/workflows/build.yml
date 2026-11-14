@@ -3,11 +3,14 @@
 #
 # Matrix cells:
 #   * cpu-light on any runner (runs on the rig host; Act maps all labels to host)
-#   * p2fork on the rig — CUDA sm_86 for the 3060s, pinned matrix (no
-#     continue-on-error anywhere in this file: a build that cannot compile is
-#     a hard failure).
-#   * p2fork-server on the rig — the routed llama-server. The routing suite
-#     needs the binary, not only the lib.
+#   * vulkan-p2fork on the rig — the P2 fork library built for Vulkan, with the
+#     Vulkan residency patch. Pinned matrix (no continue-on-error anywhere in
+#     this file: a build that cannot compile is a hard failure).
+#   * vulkan-mi25-p2fork-server on the rig — the routed llama-server for Vulkan.
+#     The routing suite needs the binary, not only the lib. The profile gives
+#     <out>/bin/llama-server, the lib set, the headers and build-manifest.json
+#     (server_built true). The CUDA profile p2fork-server stays in the build
+#     script for a CUDA host, and no cell here names it.
 #
 # Every cell builds `integration`.
 # The P2 feature branches stay on origin as history for the SHAs 12-16 cite,
@@ -45,11 +48,11 @@ jobs:
             profile: cpu-light
             runner: [self-hosted, cpu]
           - ref: integration
-            profile: p2fork
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-p2fork
+            runner: [self-hosted, gpu, vulkan]
           - ref: integration
-            profile: p2fork-server
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-mi25-p2fork-server
+            runner: [self-hosted, gpu, vulkan]
     runs-on: ${{ matrix.runner }}
     name: build (${{ matrix.ref }} / ${{ matrix.profile }})
     steps:

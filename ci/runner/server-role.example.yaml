@@ -1,6 +1,8 @@
 # Example runtime config for ONE server role. Role names are yours.
 #
-# Install as ~/.config/inferference/<role>.yaml — one file per role. The unit
+# Install as <config dir>/<role>.yaml — one file per role. The launcher picks the
+# config dir like the reconcile CLI: $INFERFERENCE_CONFIG_DIR, then /etc/inferference
+# when it exists, then ~/.config/inferference with a warning. The unit
 # reads it AT START, so changing a model or a pool is an edit plus
 # `systemctl --user restart inferference-server@<role>`, never a NixOS rebuild.
 # That is why these values are here and not in nix/nixos-module.nix.

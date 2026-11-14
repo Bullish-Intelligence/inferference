@@ -1,6 +1,6 @@
 """Shared boundary types and runtime facts for the llama.cpp teaching core."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .benchmark import BenchmarkRecord, BenchmarkTimer, write_benchmark_record
 from .capabilities import (
@@ -21,6 +21,7 @@ from .fingerprint import (
 )
 from .grammar import GrammarCacheKey, GrammarCompilerCache, JsonSchemaGrammar
 from .models import EngineConfig, GenerationRequest, GenerationResult
+from .seq_adapter_coverage import SeqRoutedAdapterRefused
 from .seq_routing import (
     LOOP_ROUTING_SYMBOLS,
     NO_ADAPTER,
@@ -32,6 +33,7 @@ from .seq_routing import (
     library_supports_loop_routing,
     library_supports_seq_routing,
 )
+from .tied_head_adapter import TiedHeadAdapterRefused
 
 # NOTE: the router (``router.py``) and owned decoder (``decode.py``) are heavy,
 # native-backed modules; like ``decode``, ``router`` is imported directly by
@@ -63,8 +65,10 @@ __all__ = [
     "NO_ADAPTER",
     "NO_LOOP_ADAPTER",
     "RuntimeDiagnostics",
+    "SeqRoutedAdapterRefused",
     "SeqRoutingBinding",
     "SeqRoutingUnavailable",
+    "TiedHeadAdapterRefused",
     "collect_runtime_diagnostics",
     "config_dir",
     "file_identity",

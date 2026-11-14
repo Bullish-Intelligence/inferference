@@ -21,7 +21,7 @@
 # The card is a plain index here and ONLY here. Everywhere else it is named by
 # the role variable (AGENTS.md, GPU discipline).
 
-# Where this machine keeps GGUFs (rig-env.sh defaults to ~/.cache/inferference/models).
+# Where the host keeps GGUFs (rig-env.sh defaults to ~/.cache/inferference/models).
 # export INFERFERENCE_MODELS_DIR="$HOME/.cache/inferference/models"
 
 # --- roles --------------------------------------------------------------------
@@ -39,6 +39,46 @@
 # Which role generic gates and bench use when none is named ($MODEL_DEFAULT).
 # Defaults to the first role declared above.
 # export INFERFERENCE_DEFAULT_ROLE=large
+
+# --- what the capability suites need ------------------------------------------
+# Each suites/<name>/suite.json names a model ROLE in env.MODEL_ROLE, never a
+# model file. ci/runner/run-suite.sh resolves the role to $MODEL_<ROLE> and FAILS,
+# naming the variable, when it is unset or unreadable. Declare these:
+#
+#   role "default"   $MODEL_DEFAULT, from INFERFERENCE_DEFAULT_ROLE above.
+#                    Used by: router, cached-router, lora-probe, prefix-cache,
+#                    p2-mixed-batch-lora. Any model works.
+#                    $TOKENIZER_DEFAULT comes from the default role's
+#                    `tokenizer=` pair. The router and cached-router suites need it.
+#   $MODEL_PROBE_DIR LoRA probe adapters (probe-a.gguf, probe-b.gguf) built for
+#                    the DEFAULT role's architecture. Needed by router,
+#                    cached-router, lora-probe and p2-mixed-batch-lora. An
+#                    adapter that does not match the model is not a valid probe.
+#
+#   role "nanbeige"  $MODEL_NANBEIGE: a GGUF whose general.architecture is
+#                    nanbeige. These suites test that architecture, so no other
+#                    model works. Used by: nanbeige-arch, nanbeige-hats,
+#                    p2-server-seq-routing.
+#   $MODEL_NANBEIGE_LORA_PROBE
+#                    nanbeige LoRA probe adapters. Needed by nanbeige-hats and
+#                    p2-server-seq-routing.
+#
+# Optional, for the routing smoke test (one model per architecture):
+#   $MODEL_LLAMA     a llama-architecture GGUF.
+#   $ROUTING_SMOKE_ADAPTERS  where its adapter sets live (see test_routing_smoke.py).
+#
+# inferference_role primary 0 "${INFERFERENCE_MODELS_DIR}/<model>.gguf" \
+#     tokenizer="<local tokenizer dir>"
+# export INFERFERENCE_DEFAULT_ROLE=primary
+# export MODEL_PROBE_DIR="${INFERFERENCE_MODELS_DIR}/<default-model>-lora-probe"
+# inferference_role nanbeige 1 "${INFERFERENCE_MODELS_DIR}/<nanbeige-model>.gguf"
+# export MODEL_NANBEIGE_LORA_PROBE="${INFERFERENCE_MODELS_DIR}/nanbeige-lora-probe"
+
+# --- fan channels ---------------------------------------------------------------
+# The fan channels that duct air through the GPU cards, as a comma list. The
+# experiment run summary and curve compare tools read it. `--fan-channel` on
+# either tool overrides it. With neither, the tools refuse to guess.
+# export INFERFERENCE_DUCT_FAN_CHANNELS="1"
 
 # --- optional overrides --------------------------------------------------------
 # Bench baselines root. Set this if you already have a baseline store elsewhere;

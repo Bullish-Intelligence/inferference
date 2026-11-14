@@ -1,5 +1,6 @@
 {
   "llama_cpp_python": { "repo": "https://github.com/abetlen/llama-cpp-python", "ref": "v0.3.34", "commit": "629bd1b333f60d24a01886c5f99019f4c7c3ea6c" },
-  "llama_cpp":        { "repo": "https://github.com/Bullish-Design/llama-infernal", "ref": "integration", "commit": "ecc0cb0d34e17595ff0546b89c44fa100d076c0d" },
-  "llama_cpp_anchor": "0ab9d6fed"
+  "llama_cpp":        { "repo": "https://github.com/Bullish-Design/llama-infernal", "ref": "integration", "commit": "ecc0cb0d34e17595ff0546b89c44fa100d076c0d", "vulkan_residency_patch_sha256": "d916a61ea4d3387abda3bcc1808b78e360135963dba4963e92514f80bfe7a621" },
+  "llama_cpp_anchor": "0ab9d6fed",
+  "source_tree_sha256": "5b8f71bfbb19131551d7808680e9fd3e5863ea5bde1064291fd1215a86a88402"
 }

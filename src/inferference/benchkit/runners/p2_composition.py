@@ -55,7 +55,7 @@ This runner **sits beside** ``p2_throughput.py`` and never modifies it:
 ``p2_throughput`` is CI-wired at ``ci/workflows/bench.yml``. This runner
 touches no code under ``src/inferference/``.
 
-GPU-only: `CUDA_VISIBLE_DEVICES=0`, `n_gpu_layers=-1`, `LLAMA_CPP_LIB_PATH`
+GPU-only: one pinned card, `n_gpu_layers=-1`, `LLAMA_CPP_LIB_PATH`
 pinned to a fork lib. The GPU is asserted by measurement (VRAM floor and a
 decode-throughput floor), never by reading a log line.
 """
@@ -74,9 +74,11 @@ from typing import Any
 import numpy as np
 
 from inferference.fingerprint import LlamaEngineFingerprint, register_artifact
+from inferference.gpu_env import lib_backend_label
 from inferference.seq_routing import NO_ADAPTER, SeqRoutingBinding, library_supports_seq_routing
+from inferference.tied_head_adapter import refuse_tied_head_adapters
 
-from ..env import gpu_snapshot, require_ci_device
+from ..env import gpu_snapshot, require_ci_device, used_mib
 from ..runenv import RunContext
 
 REPO = Path(__file__).resolve().parents[3]
@@ -187,10 +189,9 @@ def require_gpu(snapshot: dict[str, Any], *, floor_mib: int) -> tuple[int, int]:
     The server-device idle rule is unchanged (the rig's server device must not
     also hold the bench's model).
     """
-    lines = snapshot["stdout"].splitlines()
-    if len(lines) < 2:
-        raise RuntimeError("expected two GPUs in the nvidia-smi snapshot")
-    used = [int(line.split(", ")[-1].split()[0]) for line in lines]
+    used = used_mib(snapshot)
+    if len(used) < 2:
+        raise RuntimeError("expected two GPUs in the GPU snapshot")
     ci = int(os.environ.get("LLAMA_CI_GPU", "0"))
     srv = int(os.environ.get("LLAMA_SERVER_GPU", "1"))
     if used[ci] < floor_mib:
@@ -207,6 +208,7 @@ class Harness:
         from llama_cpp import Llama, llama_cpp  # noqa: PLC0415
 
         self.C = llama_cpp
+        self.model_path = model_path
         self.llm = Llama(model_path=model_path, n_ctx=n_ctx, n_batch=n_batch, n_gpu_layers=-1, seed=seed, verbose=False)
         self.model = self.llm._model.model
         self.n_vocab = int(self.llm._n_vocab)
@@ -225,6 +227,7 @@ class Harness:
             raise RuntimeError("llama_set_adapters_lora failed")
 
     def load_adapter(self, key: str, path: str) -> None:
+        refuse_tied_head_adapters(self.model_path, [(key, path)])
         ptr = self.C.llama_adapter_lora_init(self.model, path.encode("utf-8"))
         if not ptr:
             raise RuntimeError(f"failed to load adapter {key!r} from {path}")
@@ -732,7 +735,7 @@ def main() -> int:
             llama_cpp_commit=(manifest or {}).get("llama_cpp_commit"),
             llama_cpp_build_id=(manifest or {}).get("build_id"),
             seq_adapter_routing=True,
-            backend="cuda",
+            backend=lib_backend_label(lib_path, manifest),
             n_ctx=args.n_ctx,
         )
 

@@ -20,8 +20,9 @@ from .spec import ExperimentSpec, Fixed
 def hash_fixed(fixed: Fixed) -> str:
     """A stable sha256 of the `fixed` block, independent of key order.
 
-    `Fixed` leaves an absent `placement` out of its dump. Every single-card
-    spec then keeps the digest it had before `placement` existed.
+    `Fixed` leaves an absent `placement` or `server` out of its dump. Every
+    spec without them keeps the digest it had before they existed. A present
+    `server.extra_args` is part of the digest.
     """
     canonical = json.dumps(fixed.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()

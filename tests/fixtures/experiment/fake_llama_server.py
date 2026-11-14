@@ -24,6 +24,10 @@ Modes, selected by argv and environment:
 `FAKE_SERVER_EXIT_BEFORE_BIND=1` makes it exit 1 before binding, to test the
 exit-before-healthy path.
 
+`FAKE_SERVER_CONTENT_PARTS` lists the content deltas of a chat stream, split on
+`|` (default `ok`). `FAKE_SERVER_DRAFT=1` adds `draft_n` and `draft_n_accepted`
+to the final `timings`.
+
 It traps `SIGINT` and exits 0 after exactly one handler run, writing the
 count of `SIGINT`s it received to `FAKE_SERVER_SIGINT_COUNT_FILE` (atomically:
 a temp file in the same directory, then `os.replace`), so a test can assert
@@ -129,8 +133,9 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
-        delta_chunk = {"choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": None}]}
-        _chunk(f"data: {json.dumps(delta_chunk)}\n\n".encode())
+        for part in os.environ.get("FAKE_SERVER_CONTENT_PARTS", "ok").split("|"):
+            delta_chunk = {"choices": [{"index": 0, "delta": {"content": part}, "finish_reason": None}]}
+            _chunk(f"data: {json.dumps(delta_chunk)}\n\n".encode())
         stream_delay_s = float(os.environ.get("FAKE_SERVER_STREAM_DELAY_S", "0") or "0")
         if stream_delay_s > 0:
             # Hold the stream open mid-body so a runner-initiated shutdown
@@ -144,16 +149,19 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
                 # read)"), so cut the connection rather than finish.
                 self.close_connection = True
                 return
+        timings = {
+            "prompt_n": prompt_tokens,
+            "prompt_ms": 1.0,
+            "predicted_n": 1,
+            "predicted_ms": 1.0,
+            "cache_n": 0,
+        }
+        if os.environ.get("FAKE_SERVER_DRAFT"):
+            timings.update({"draft_n": 4, "draft_n_accepted": 3})
         final_chunk = {
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 1, "total_tokens": prompt_tokens + 1},
-            "timings": {
-                "prompt_n": prompt_tokens,
-                "prompt_ms": 1.0,
-                "predicted_n": 1,
-                "predicted_ms": 1.0,
-                "cache_n": 0,
-            },
+            "timings": timings,
         }
         _chunk(f"data: {json.dumps(final_chunk)}\n\n".encode())
         _chunk(b"data: [DONE]\n\n")
@@ -203,7 +211,10 @@ def main(argv: list[str]) -> int:
     print("fake server ready", file=sys.stderr)
     sys.stderr.flush()
 
-    stop_event.wait()
+    # Wait in short steps. A signal can reach another thread, and an untimed
+    # wait in the main thread then never runs the Python handler.
+    while not stop_event.wait(0.05):
+        pass
     server.shutdown()
     server.server_close()
     return 0

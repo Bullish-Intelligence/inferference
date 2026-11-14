@@ -6,11 +6,11 @@ layer on the GPU, and silently spills into host memory over PCIe, where it runs
 about **14x slower** with nothing in any log to say so. So the refusal has to
 happen HERE, before anything is loaded.
 
-Two rules from the owner shape this module:
+Two rules shape this module:
 
 * **Refuse, never evict.** A placement that would exceed a card's budget is a
   loud failure that LISTS what is already resident there, with footprints, so
-  the owner decides what comes out. Choosing a victim is not this code's call.
+  the operator decides what comes out. Choosing a victim is not this code's call.
 * **YAML wins.** The declared placement is the truth. Whatever is currently on
   the card — including anything done through the router's own
   ``/models/load`` — is overridden by a reconcile.
@@ -223,7 +223,7 @@ class RouterConfig(_Strict):
 
     ``--models-max`` is the one router flag the reconciler MUST know: below the
     resident count, an explicit load returns success and silently evicts the
-    least recently used model (007 report 02, U3). It can only be scraped off a
+    least recently used model. It can only be scraped off a
     RUNNING child's argv, so on an empty router it is unknowable — and treating
     "unknown" as "fine" is exactly the silent eviction the rule forbids.
 
@@ -287,7 +287,7 @@ class Placement(_Strict):
         """``--models-max`` must be >= the resident count.
 
         Below it, an explicit load returns success and SILENTLY evicts the least
-        recently used model (007 report 02, U3) — a declared-resident model goes
+        recently used model — a declared-resident model goes
         down with no error to the caller.
         """
         return max(1, len(self.resident))
@@ -338,7 +338,7 @@ class NoSingleCardFitsError(PlacementError):
 
 
 class BudgetError(PlacementError):
-    """A placement exceeds a device's budget. Carries the listing for the owner."""
+    """A placement exceeds a device's budget. Carries the listing for the operator."""
 
     def __init__(self, budgets: Sequence[DeviceBudget]) -> None:
         self.budgets = list(budgets)

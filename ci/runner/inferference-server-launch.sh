@@ -8,9 +8,9 @@
 # AGENTS.md forbids. A unit instantiated per ROLE can hold no index at all — the
 # card comes from that role's variable, resolved here.
 #
-#   inferference-server-launch.sh <role> [--check]
+#   inferference-server-launch.sh <role> [--check | --print-config]
 #
-# <role> is any role this machine declares in ci/runner/rig-local.sh. It is the
+# <role> is any role the host declares in ci/runner/rig-local.sh. It is the
 # instance name AND the suffix of the two variables that resolve the role:
 #
 #   <role> -> $LLAMA_GPU_<ROLE>   the card it serves
@@ -20,10 +20,11 @@
 # + 54.4 MiB per adapter, a ~9B server 6.3 GiB + 59.3 MiB per adapter.
 #
 # --check resolves everything, prints it, and exits without starting. Use it to
-# verify an install without holding a card.
+# verify an install without holding a card. --print-config prints the config
+# dir and exits, before any rig check.
 #
 # RUNTIME CONFIGURATION IS YAML, AND ONLY YAML. One role, one file:
-# ~/.config/inferference/<role>.yaml, resolved by inferference-config.py. There
+# <config dir>/<role>.yaml, resolved by inferference-config.py. There
 # is no environment override for a port, a model, a context size or an argument.
 # Two mechanisms mean a server can run a port one file names and another file
 # does not, and no one can tell which won by reading either file. The schema is
@@ -31,8 +32,11 @@
 #
 # The only environment this file reads is install plumbing — WHERE things are,
 # never WHAT the server runs:
-#   INFERFERENCE_CONFIG_DIR  where the per-role YAML lives.
-#                            Default ~/.config/inferference.
+#   INFERFERENCE_CONFIG_DIR  where the per-role YAML lives. When it is unset,
+#                            this script asks
+#                            `inferference-reconcile.py config-dir`. That CLI
+#                            owns the default order: /etc/inferference when it
+#                            exists, then ~/.config/inferference with a warning.
 #   INFERFERENCE_SERVER_DIR  Mode A artefact dir. Default ci/modea/server/current.
 #   INFERFERENCE_PYTHON      interpreter for the resolver. Default the library venv.
 # Plus $LLAMA_GPU_<ROLE> and $MODEL_<ROLE> from rig-env.sh, which are the rig's
@@ -45,18 +49,43 @@ set -euo pipefail
 
 role="${1:-}"; shift || true
 check=0
+print_config=0
 [[ "${1:-}" == "--check" ]] && check=1
-[[ -n "$role" ]] || { echo "usage: inferference-server-launch.sh <role> [--check]" >&2; exit 2; }
+[[ "${1:-}" == "--print-config" ]] && print_config=1
+[[ -n "$role" ]] || { echo "usage: inferference-server-launch.sh <role> [--check | --print-config]" >&2; exit 2; }
 [[ "$role" =~ ^[a-z][a-z0-9]*$ ]] || { echo "!! role '${role}' must be lowercase alphanumeric" >&2; exit 2; }
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"        # ci/runner
 repo="$(cd "${here}/../.." && pwd)"
-# shellcheck disable=SC1091
-source "${here}/rig-env.sh"
-
 # EX_CONFIG. systemd reports it distinctly, so a missing rig fact never looks
 # like a crashed server.
 _cfg() { echo "!! [inferference-server:${role}] $*" >&2; exit 78; }
+
+# The config dir. An explicit $INFERFERENCE_CONFIG_DIR passes through as it is
+# and the CLI is not asked. Without it, the reconcile CLI names the dir. It is
+# the one source of truth for the default order.
+config_py="${INFERFERENCE_PYTHON:-${repo}/ci/library/.venv/bin/python}"
+if [[ -n "${INFERFERENCE_CONFIG_DIR:-}" ]]; then
+  config_dir="$INFERFERENCE_CONFIG_DIR"
+  # A literal leading `~` expands here, as python expands it in the CLI.
+  if [[ "$config_dir" == "~" ]]; then
+    config_dir="${HOME:?\$HOME is unset, so ~ in INFERFERENCE_CONFIG_DIR cannot expand}"
+  elif [[ "$config_dir" == "~/"* ]]; then
+    config_dir="${HOME:?\$HOME is unset, so ~ in INFERFERENCE_CONFIG_DIR cannot expand}/${config_dir:2}"
+  fi
+else
+  [[ -x "$config_py" ]] || _cfg "no python at ${config_py} to ask the reconcile CLI for the config dir. Set \$INFERFERENCE_CONFIG_DIR, or \$INFERFERENCE_PYTHON, or run ci/runner/library-venv.sh."
+  config_dir="$("$config_py" "${here}/inferference-reconcile.py" config-dir)" \
+    || _cfg "the reconcile CLI could not name the config dir. Set \$INFERFERENCE_CONFIG_DIR."
+  [[ -n "$config_dir" ]] || _cfg "the reconcile CLI printed no config dir. Set \$INFERFERENCE_CONFIG_DIR."
+fi
+if (( print_config )); then
+  echo "config_dir=${config_dir}"
+  exit 0
+fi
+
+# shellcheck disable=SC1091
+source "${here}/rig-env.sh"
 
 # --- the card, from the ROLE variable and nothing else ------------------------
 upper="${role^^}"
@@ -75,7 +104,13 @@ if [[ -n "${GPU_LEASE_CARD:-}" && "${GPU_LEASE_CARD}" != "$card" ]]; then
   _cfg "started inside a GPU lease on card ${GPU_LEASE_CARD}, but role '${role}' serves card ${card} (\$${gpu_var}). The lease would hold a lock over a card this server does not use. This unit takes no lock and must not run under one."
 fi
 
+# Every backend reads its own variable. The Vulkan filter is GGML_VK_VISIBLE_DEVICES;
+# CUDA_VISIBLE_DEVICES alone leaves a Vulkan server on whichever card rig-env.sh
+# defaulted (card 0), not the role's card. A ROCm build reads HIP_VISIBLE_DEVICES.
+# Pin all three, as ci/runner/gpu-lease.sh does.
 export CUDA_VISIBLE_DEVICES="$card"
+export GGML_VK_VISIBLE_DEVICES="$card"
+export HIP_VISIBLE_DEVICES="$card"
 
 # --- the artefact -------------------------------------------------------------
 server_dir="${INFERFERENCE_SERVER_DIR:-${repo}/ci/modea/server/current}"
@@ -112,7 +147,7 @@ case "$cuda_res" in
 esac
 
 # --- the YAML config — REQUIRED, and the only source --------------------------
-# Runtime config lives in ~/.config/inferference/<role>.yaml, NOT in the Nix
+# Runtime config lives in <config dir>/<role>.yaml, NOT in the Nix
 # module: changing a model or a pool should be an edit and a restart, never a
 # NixOS rebuild. inferference-config.py resolves it to an argv and fails closed
 # (78) on anything it cannot verify — a missing adapter included, because a
@@ -124,10 +159,8 @@ esac
 # file. It is removed: two mechanisms let a server run a port one file names and
 # another does not, and neither file shows which won. A missing YAML is now a
 # refusal that names the file to write.
-config_dir="${INFERFERENCE_CONFIG_DIR:-${HOME}/.config/inferference}"
 cfg_file="${config_dir}/${role}.yaml"
 resolver="${here}/inferference-config.py"
-config_py="${INFERFERENCE_PYTHON:-${repo}/ci/library/.venv/bin/python}"
 
 [[ -f "$cfg_file" ]] || _cfg "no config at ${cfg_file}. Write it — see ci/runner/server-role.example.yaml. YAML is the only configuration mechanism; there is no environment fallback, on purpose."
 [[ -x "$config_py" ]] || _cfg "no python at ${config_py} to read ${cfg_file}. Set \$INFERFERENCE_PYTHON, or run ci/runner/library-venv.sh."

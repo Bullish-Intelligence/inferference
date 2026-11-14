@@ -2,7 +2,7 @@
 #
 # TEMPLATE. Do not install this file directly. Substitute @REPO_DIR@ and install
 # it as a `systemd --user` unit. See ci/build/mode-a.md and
-# the server seq-routing spike's handoff notes.
+# the server seq-routing notes.
 #
 # ONE INSTANCE PER CARD, NAMED BY ROLE — not by index:
 #
@@ -37,7 +37,7 @@ PartOf=inferference-gpu.target
 Type=exec
 
 # --- runtime configuration is YAML, and ONLY YAML ----------------------------
-# One role, one file: %h/.config/inferference/%i.yaml, resolved at start by
+# One role, one file: <config dir>/%i.yaml, resolved at start by
 # ci/runner/inferference-config.py. Schema in ci/runner/server-role.example.yaml.
 #
 # The template lives in a repository, so it holds no rig path and no port. It
@@ -50,8 +50,11 @@ Type=exec
 # is an edit plus `systemctl --user restart`, never a NixOS rebuild. That is why
 # these values are not here.
 #
-# This line says WHERE the YAML is, never what is in it.
-Environment=INFERFERENCE_CONFIG_DIR=%h/.config/inferference
+# The unit sets no config dir. The launcher asks `inferference-reconcile.py
+# config-dir`, which picks: $INFERFERENCE_CONFIG_DIR, then /etc/inferference
+# when it exists, then ~/.config/inferference with a warning. To pin a dir,
+# uncomment the line below. It says WHERE the YAML is, never what is in it.
+#Environment=INFERFERENCE_CONFIG_DIR=%h/.config/inferference
 
 # The launcher resolves the card, the artefact, the model and the loader path,
 # and refuses with EX_CONFIG (78) on any missing rig fact — before the model is

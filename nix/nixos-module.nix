@@ -12,7 +12,7 @@
 #
 # WHAT THIS MODULE DOES NOT HOLD, on purpose: no model path, no port, no
 # adapter pool, no device placement, no context size, no `--models-max`. Those
-# all live in YAML under ~/.config/inferference/ — placement.yaml (which models
+# all live in YAML in the config dir — placement.yaml (which models
 # are resident, on which device(s), and how the router itself is launched) and
 # models/<name>.yaml (what each model is) — read by the unit AT START. Changing
 # a model, a pool, or the resident set is an edit and a
@@ -21,9 +21,8 @@
 #
 # ONE ROUTER, TOTAL. This replaces the retired single-role design —
 # services.inferference-server, one instance per role, one model pinned per
-# card via $LLAMA_GPU_<ROLE>. AGENTS.md now says "THIS LIBRARY OWNS ALL LLM
-# SERVING. There is no other server.": every model this machine serves is a
-# child process the ONE router spawns from a generated preset INI, and which
+# card via $LLAMA_GPU_<ROLE>. There is no other server: every model the host
+# serves is a child process the ONE router spawns from a generated preset INI, and which
 # card(s) a model lands on is a placement.yaml decision, never a unit
 # parameter and never a literal device index anywhere in Nix.
 #
@@ -46,6 +45,7 @@ let
   # missing fact exits 78 (EX_CONFIG), which systemd reports distinctly, so a
   # misconfiguration never looks like a crashed router.
   launcher = "${cfg.repoDir}/ci/runner/inferference-router-launch.sh";
+  reloader = "${cfg.repoDir}/ci/runner/inferference-router-reload.sh";
 in
 {
   options.services.inferference-router = {
@@ -70,13 +70,20 @@ in
     };
 
     configDir = lib.mkOption {
-      type = lib.types.str;
-      default = "%h/.config/inferference";
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "%h/.config/inferference";
       description = ''
         Where placement.yaml and models/*.yaml live. %h expands to the user's
-        home. This is WHERE the config is, never WHAT is in it — host, port,
-        `--models-max`, the resident set and every model's device placement
-        are all declared inside that directory, not here.
+        home. The default, null, sets no variable: the launcher then asks
+        `inferference-reconcile.py config-dir`, which picks
+        $INFERFERENCE_CONFIG_DIR, then /etc/inferference when it exists, then
+        ~/.config/inferference with a warning. This is WHERE the config is,
+        never WHAT is in it — host, port, `--models-max`, the resident set and
+        every model's device placement are all declared inside that directory,
+        not here. While this option is null, the module prints a warning:
+        the default was `%h/.config/inferference` before. Set the option to
+        silence it.
       '';
     };
 
@@ -98,6 +105,19 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # The configDir default was `%h/.config/inferference`. It is now null, and the
+    # launcher then prefers /etc/inferference when that dir exists. A machine that
+    # has both dirs now reads /etc/inferference, not the home copy.
+    warnings = lib.optional (cfg.configDir == null) ''
+      services.inferference-router.configDir is not set. Before, the default was
+      "%h/.config/inferference". Now the unit sets no config dir, and the launcher
+      reads /etc/inferference when that dir exists, else ~/.config/inferference.
+      If you relied on the old default and /etc/inferference exists, the router
+      now reads that dir. Set services.inferference-router.configDir =
+      "%h/.config/inferference" to keep the old behaviour, or "/etc/inferference"
+      to confirm the new one.
+    '';
+
     users.users.${cfg.user}.linger = lib.mkIf cfg.lingering true;
 
     systemd.user.services.inferference-router = {
@@ -106,9 +126,17 @@ in
       wantedBy = lib.optional cfg.autoStart "default.target";
 
       # No device placement and no model path here. The launcher renders the
-      # preset INI and resolves everything else from
-      # ${cfg.configDir}/{placement.yaml,models/*.yaml}.
-      environment.INFERFERENCE_CONFIG_DIR = cfg.configDir;
+      # preset INI and resolves everything else from the config dir. With
+      # configDir null, the launcher asks the reconcile CLI which dir to read.
+      environment = {
+        # One lock file for every reload of this unit (%t is the runtime dir).
+        INFERFERENCE_RELOAD_LOCK = "%t/inferference-reload.lock";
+      } // lib.optionalAttrs (cfg.configDir != null) {
+        INFERFERENCE_CONFIG_DIR = cfg.configDir;
+      };
+
+      # The reload script takes its lock with flock.
+      path = [ pkgs.util-linux ];
 
       serviceConfig = {
         Type = "exec";
@@ -117,14 +145,22 @@ in
         # ExecStartPre with EX_CONFIG rather than as a crash loop.
         ExecStartPre = "${launcher} --check";
         ExecStart = launcher;
+        # `systemctl --user reload inferference-router` reconciles the running
+        # router to the YAML without a restart. The script keeps one deadline
+        # (600 s) plus 240 s of overhead under TimeoutStartSec, which systemd
+        # applies to ExecReload too, and holds a lock so that two reloads cannot
+        # run at once.
+        ExecReload = reloader;
         Restart = "on-failure";
         # Guard thermal stops and failed safety admission need a cool/manual restart.
         RestartPreventExitStatus = "75 76";
         RestartSec = 5;
         # Startup loads every resident model (load-on-startup=true in the
         # rendered preset); a wide resident set is slow. Do not let systemd
-        # kill a healthy start.
-        TimeoutStartSec = 300;
+        # kill a healthy start. systemd also applies this value to ExecReload:
+        # a reload waits for loads for 600 s plus up to 240 s of overhead
+        # (840 s), so the value is 900 s.
+        TimeoutStartSec = 900;
         # A stop must reach the llama-server processes EXACTLY ONCE. With the
         # default KillMode=control-group, systemd broadcasts KillSignal to the
         # whole cgroup; the guard (MainPID) dies at once because it traps

@@ -27,12 +27,19 @@ import os
 import sys
 from pathlib import Path
 
+from inferference.gpu_env import UNKNOWN_BACKEND_LABEL, lib_backend_label
+
 from .baselines import BaselineStore
 from .env import visible_gpu_uuid
 
 
-def baseline_key(manifest: dict[str, object], workload: str) -> str:
-    """workload@<built-commit>-<featureset> — deterministic, never a date."""
+def legacy_baseline_key(manifest: dict[str, object], workload: str) -> str:
+    """The key format before the backend joined it: workload@<commit>-<featureset>.
+
+    A baseline stored under this key came from a build whose backend nobody
+    recorded. The recorded ones come from an earlier CUDA rig. Nothing reads
+    them as a match. The gate reports them and leaves them on disk.
+    """
     built = str(manifest.get("llama_cpp_commit") or manifest.get("ref_built") or "unknown")
     raw_features = manifest.get("features") or []
     assert isinstance(raw_features, list)
@@ -40,10 +47,19 @@ def baseline_key(manifest: dict[str, object], workload: str) -> str:
     return f"{workload}@{built}-{featureset}"
 
 
+def baseline_key(manifest: dict[str, object], workload: str, backend: str) -> str:
+    """workload@<built-commit>-<featureset>@<backend> — deterministic, never a date.
+
+    The backend is part of the key. A CUDA run and a Vulkan run of one commit
+    are different quantities and must never compare.
+    """
+    return f"{legacy_baseline_key(manifest, workload)}@{backend}"
+
+
 def cross_device_error(run_uuid: str | None, stored_uuid: str | None) -> str | None:
     """Error text when a baseline was recorded on a different GPU, else None.
 
-    Fail-closed: the device index is a function of CUDA_VISIBLE_DEVICES
+    Fail-closed: the device index is a function of the device-visibility variable
     and reads 0 for whichever card was exposed, so only the GPU UUID names a
     card. A baseline recorded on one GPU must never be compared against a run on
     another — both cards are the same model, so the drift would be small and
@@ -77,21 +93,32 @@ def main() -> int:
     # Persistent baselines root — resolution order: --artifacts, then
     # $BASELINES_ROOT (rig cache, survives Act workdir trims), then the repo
     # ci/.ci-artifacts fallback. The Act workdir's own ci/.ci-artifacts is
-    # EPHEMERAL (trimmed with the workdir — the step-5 first baseline died that
+    # EPHEMERAL (trimmed with the workdir — a first baseline died that
     # way); rig-env.sh exports BASELINES_ROOT outside the workdir so the store
     # persists. Re-save-on-first-run is the documented semantics: a key with no
     # stored baseline saves (--save) instead of comparing.
     root = args.artifacts or Path(os.environ.get("BASELINES_ROOT") or "")
     if not root.is_dir():
-        root = Path(__file__).resolve().parents[2] / "ci/.ci-artifacts"
+        root = Path(__file__).resolve().parents[3] / "ci/.ci-artifacts"
     store = BaselineStore(root)
-    key = baseline_key(manifest, args.workload)
+    backend = lib_backend_label(args.manifest.parent / "lib", manifest)
+    if backend == UNKNOWN_BACKEND_LABEL:
+        # An unknown backend would store or compare under one shared key.
+        print(f"[baseline] FAIL: the library set in {args.manifest.parent / 'lib'} gives no evidence of its backend")
+        return 1
+    key = baseline_key(manifest, args.workload, backend)
+    legacy = legacy_baseline_key(manifest, args.workload)
     gpu_uuid = visible_gpu_uuid()
-    print(f"[baseline] key={key} (workload@{manifest.get('llama_cpp_commit')}-featureset) gpu={gpu_uuid}")
+    print(f"[baseline] key={key} (workload@commit-featureset@backend) backend={backend} gpu={gpu_uuid}")
+    if store.load(legacy) is not None:
+        print(
+            f"[baseline] NOTE legacy baseline '{legacy}' exists in {store.dir}. It has no backend "
+            f"and is NOT compared with this {backend} run. It stays on disk, untouched."
+        )
 
     # Cross-device guard: a baseline recorded on one GPU must never be
     # compared against a run on another. The GPU UUID is the identity, not the
-    # index (the index is a function of CUDA_VISIBLE_DEVICES).
+    # index (the index is a function of the device-visibility variable).
     existing = store.load(key)
     guard_error = cross_device_error(gpu_uuid, existing.get("_baseline_gpu_uuid") if existing else None)
     if guard_error is not None:
@@ -108,11 +135,12 @@ def main() -> int:
     if info.get("reason") == "no_baseline":
         if args.save:
             summary["_baseline_gpu_uuid"] = gpu_uuid
+            summary["_baseline_backend"] = backend
             path = store.save(key, summary)
-            print(f"[baseline] saved new baseline -> {path}")
+            print(f"[baseline] NO COMPARISON MADE: no baseline for key {key}. Saved this run as the baseline -> {path}")
             return 0
-        print("[baseline] no baseline stored (compare-only run); PASS (nothing to regress against)")
-        return 0
+        print(f"[baseline] FAIL — no baseline for key {key} in {store.dir}. Nothing was compared. Use --save.")
+        return 1
     if regression:
         print(
             f"[baseline] FAIL — {info.get('metric')} regressed {info.get('delta_percent'):.2f}% "

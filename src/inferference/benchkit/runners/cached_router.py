@@ -17,7 +17,7 @@ Gates (fail-closed, deterministic greedy), swept over base / probe-a / probe-b
   2. Validity (constrained): every cached output is schema-valid JSON.
 Throughput: cached wave vs cold wave (CUDA-synchronized wall time).
 
-GPU-only: CUDA_VISIBLE_DEVICES=0, n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
+GPU-only: one card pinned (LLAMA_CI_GPU), n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
 """
 
 from __future__ import annotations
@@ -31,12 +31,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from inferference.gpu_env import lib_backend_label
+from inferference.mixed_batch_gates import TOKEN_EXACT, gate_mode, report_measurement
 from inferference.models import EngineConfig
 from inferference.router import BASE, AdapterSpec, MultiLoRARouter, RouterConfig, RouteRequest
 
 from ..env import gpu_snapshot, require_ci_device, require_gpu0_only
-from ..gates import _resolve_tokenizer
+from ..gates import _resolve_tokenizer, load_tokenizer
 from ..runenv import RunContext
+from ..trace_router import TraceRouter, cached_legs
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -137,7 +140,10 @@ def main() -> int:
     adapters: list[str | None] = [BASE, "probe-a"] if args.constrained else [BASE, "probe-a", "probe-b"]
     max_tokens = args.max_tokens
 
-    router = MultiLoRARouter(
+    # The gate family follows the loaded backend. An unknown backend raises here, before the load.
+    mode = gate_mode()
+    router_cls = MultiLoRARouter if mode == TOKEN_EXACT else TraceRouter
+    router = router_cls(
         RouterConfig(
             engine=EngineConfig(
                 model_path=str(args.model),
@@ -145,7 +151,7 @@ def main() -> int:
                 n_gpu_layers=-1,
                 n_batch=128,
                 seed=args.seed,
-                backend="cuda",
+                backend=lib_backend_label(),
             ),
             adapters=(
                 AdapterSpec(name="probe-a", gguf_path=str(args.lora_a)),
@@ -158,14 +164,12 @@ def main() -> int:
     )
     try:
         if args.constrained:
-            from transformers import AutoTokenizer  # noqa: PLC0415
-
             resolved = _resolve_tokenizer(str(args.tokenizer_dir), allow_network=False)
-            tokenizer = AutoTokenizer.from_pretrained(resolved, local_files_only=True)
+            tokenizer = load_tokenizer(resolved)
             router.enable_grammar(tokenizer, Route.model_json_schema())
 
         after_load = gpu_snapshot()
-        require_gpu0_only(after_load)
+        require_gpu0_only(after_load, before=gpu_before)
 
         prefix_tokens = router.tokenize(prefix_text)
         n_ctx_seq = args.n_ctx // args.n_seq_max
@@ -190,6 +194,14 @@ def main() -> int:
             for i in range(len(suffixes))
         ]
         res = router.run_cached(requests, prefix_tokens, constrained=args.constrained)
+        logit_findings: list[str] = []
+        if mode != TOKEN_EXACT:
+            assert isinstance(router, TraceRouter)
+            logit_findings, measured_pairs = cached_legs(router, requests, prefix_tokens, constrained=args.constrained)
+            measurement = report_measurement(
+                f"cached_router {'constrained' if args.constrained else 'plain'}: cached against reference",
+                measured_pairs,
+            )
 
         rows: list[dict[str, Any]] = []
         all_match = True
@@ -228,12 +240,20 @@ def main() -> int:
                     }
                 )
 
+        if mode != TOKEN_EXACT:
+            # Token equality cannot hold when the logits depend on the batch composition.
+            # The verdict takes the exact gates instead (replay and repeat bit-identical). The
+            # difference to the reference is MEASURED, not gated. The rows keep their token columns as data.
+            all_match = not logit_findings
         speedup = round(res.cold_wall_ns / res.cached_wall_ns, 2) if res.cached_wall_ns else None
         verdict = "GO" if (all_match and (all_valid if args.constrained else True)) else "NO-GO"
         result = {
             "verdict": verdict,
             "mode": "constrained" if args.constrained else "plain",
             "gates": {"all_equivalent": all_match, "all_schema_valid": all_valid},
+            "equivalence_mode": mode,
+            "equivalence_findings": logit_findings,
+            "equivalence_measured_not_gated": measurement["classes"] if mode != TOKEN_EXACT else None,
             "prefix_tokens": len(prefix_tokens),
             "cached_wall_ms": round(res.cached_wall_ns / 1e6, 1),
             "cold_wall_ms": round(res.cold_wall_ns / 1e6, 1),

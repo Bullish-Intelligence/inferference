@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .gpu_env import UNKNOWN_BACKEND_LABEL
+
 
 class _FrozenModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -97,6 +99,15 @@ class LlamaEngineFingerprint(_FrozenModel):
         return value
 
     def cache_key(self) -> str:
-        """A deterministic digest suitable for grammar and prefix-cache keys."""
+        """A deterministic digest suitable for grammar and prefix-cache keys.
+
+        Raises ``ValueError`` when the backend is unknown. Two different backends
+        would then share one key, and that key would share cache state.
+        """
+        if self.backend == UNKNOWN_BACKEND_LABEL:
+            raise ValueError(
+                "the engine backend is unknown, so a cache key would be shared between backends; "
+                "build the fingerprint with a backend label from inferference.gpu_env.lib_backend_label"
+            )
         payload = self.model_dump_json(by_alias=True, exclude_none=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()

@@ -12,7 +12,7 @@ fresh context, restore + decode the 1-token suffix, then measure (best-of-reps,
 CUDA-synchronized) cold prefill vs the cache path phases. The continuation
 token must match cold (fail-closed) or the run fails.
 
-GPU-only: CUDA_VISIBLE_DEVICES=0, n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
+GPU-only: one card pinned (LLAMA_CI_GPU), n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ import numpy as np
 
 from inferference.diagnostics import collect_runtime_diagnostics
 from inferference.fingerprint import LlamaEngineFingerprint, register_artifact
+from inferference.gpu_env import lib_backend_label
 from inferference.prefix_cache import PersistentPrefixCache, PrefixCacheKey
 
 from ..env import gpu_snapshot, require_ci_device, require_gpu0_only
@@ -88,7 +89,7 @@ def main() -> int:
 
     llm = mk()
     after_load = gpu_snapshot()
-    require_gpu0_only(after_load)
+    require_gpu0_only(after_load, before=gpu_before)
     runtime = collect_runtime_diagnostics()
     identity = register_artifact(args.model, metadata={"role": "model-and-gguf-tokenizer"})
     fingerprint = LlamaEngineFingerprint(
@@ -97,7 +98,7 @@ def main() -> int:
         llama_cpp_python_version=runtime.llama_cpp_python_version or "unknown",
         llama_cpp_commit=runtime.llama_cpp_commit,
         llama_cpp_build_id=runtime.llama_cpp_build_id,
-        backend="cuda",
+        backend=lib_backend_label(),
         n_ctx=args.n_ctx,
     )
     cache = PersistentPrefixCache(args.cache_root)

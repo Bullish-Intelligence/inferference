@@ -310,6 +310,28 @@ class LlamaContinuousBatchEngine:
 
         self._np = np
         self.C = llama_cpp
+        # Optional P2-fork mixed-adapter routing. Absent a fork lib (or no adapters) the
+        # engine is the plain single-context batcher and ``supports_seq_routing`` is
+        # False, so the scheduler never calls the routing hook.
+        self._seq_binding: Any = None
+        self._seq_index: dict[str, int] = {}
+        binding = None
+        if adapters:
+            from .seq_adapter_coverage import refuse_dropped_adapters
+            from .seq_routing import SeqRoutingBinding, SeqRoutingUnavailable
+            from .tied_head_adapter import refuse_tied_head_adapters
+
+            try:
+                binding = SeqRoutingBinding(self.C)
+            except SeqRoutingUnavailable:
+                binding = None
+            if binding is not None:
+                # An adapter on token_embd.weight aborts the process when the base model ties
+                # its output head. Refuse before the model loads.
+                refuse_tied_head_adapters(model_path, ((name, gguf_path) for name, gguf_path, _scale in adapters))
+                # The fork's seq path drops the token-embedding and MoE-expert parts of
+                # an adapter without a message. Refuse before the model loads.
+                refuse_dropped_adapters((name, gguf_path) for name, gguf_path, _scale in adapters)
         self._n_seq_max = n_seq_max
         self.n_batch = n_batch
         self.llm = Llama(
@@ -333,29 +355,17 @@ class LlamaContinuousBatchEngine:
         if not self.ctx:
             raise RuntimeError("llama_new_context_with_model returned NULL (out of VRAM?)")
 
-        # Optional P2-fork mixed-adapter routing: register an ordered pool once and
-        # let each slot pick its adapter. Absent a fork lib (or no adapters) the
-        # engine is the plain single-context batcher and ``supports_seq_routing`` is
-        # False, so the scheduler never calls the routing hook.
-        self._seq_binding: Any = None
-        self._seq_index: dict[str, int] = {}
-        if adapters:
-            from .seq_routing import SeqRoutingBinding, SeqRoutingUnavailable
-
-            try:
-                binding = SeqRoutingBinding(self.C)
-            except SeqRoutingUnavailable:
-                binding = None
-            if binding is not None:
-                ptrs = []
-                for name, gguf_path, _scale in adapters:
-                    ptr = self.C.llama_adapter_lora_init(self.model, gguf_path.encode("utf-8"))
-                    if not ptr:
-                        raise RuntimeError(f"failed to load adapter {name!r} from {gguf_path}")
-                    self._seq_index[name] = len(ptrs)
-                    ptrs.append(ptr)
-                binding.set_seq_adapters(self.ctx, ptrs)
-                self._seq_binding = binding
+        # Register the ordered pool once and let each slot pick its adapter.
+        if binding is not None:
+            ptrs = []
+            for name, gguf_path, _scale in adapters:
+                ptr = self.C.llama_adapter_lora_init(self.model, gguf_path.encode("utf-8"))
+                if not ptr:
+                    raise RuntimeError(f"failed to load adapter {name!r} from {gguf_path}")
+                self._seq_index[name] = len(ptrs)
+                ptrs.append(ptr)
+            binding.set_seq_adapters(self.ctx, ptrs)
+            self._seq_binding = binding
 
     @property
     def n_seq_max(self) -> int:

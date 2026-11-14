@@ -1,13 +1,13 @@
-"""LoRA-delta go/no-go gate (run_ornith_lora_probe validation half).
+"""LoRA-delta go/no-go gate (run_lora_probe validation half).
 
 The probe's validation half: this suite drives the benchkit runner end-to-end.
 The probe greedy-decodes a fixed prompt on the SAME base model three ways and
 compares continuations: base (no adapter), base + probe-a, base + probe-b.
 GO requires base reproducible AND base != probe-a (delta applied on this
 arch/lib) AND probe-a != probe-b (per-adapter distinct). NO-GO means the delta
-is silently dropped — the healthy-CUDA-path tripwire.
+is silently dropped — the healthy-GPU-path tripwire.
 
-GPU-only: skips (never fails) when the env lacks CUDA-offload lib / model /
+GPU-only: skips (never fails) when the env lacks GPU-offload lib / model /
 probe adapters.
 """
 
@@ -23,12 +23,12 @@ from tests.asset_paths import asset_path
 from inferference.gpu_env import gpu_env_ready
 
 _REPO = Path(__file__).resolve().parents[3]
-_MODEL = asset_path("MODEL_ORNITH")
+_MODEL = asset_path("MODEL_DEFAULT")
 _PROBE_DIR = asset_path("MODEL_PROBE_DIR")
 
 
 def _ready() -> bool:
-    # Backend-agnostic: CUDA_VISIBLE_DEVICES means nothing to the Vulkan build,
+    # Backend-agnostic: a vendor device variable means nothing to a build for another backend,
     # and requiring it here SKIPS this gate on a rig that can run it.
     if not gpu_env_ready():
         return False
@@ -43,7 +43,7 @@ def _ready() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _ready(),
-    reason="requires CUDA-offload lib + Ornith model + probe adapters (GPU env)",
+    reason="requires GPU-offload lib + MODEL_DEFAULT + probe adapters (GPU env)",
 )
 
 

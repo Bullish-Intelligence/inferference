@@ -21,8 +21,8 @@ live: it reads 0 on an idle card, matching `amd-smi metric --json`'s
 module reports only whether it is nonzero (`throttled`); it does not decode
 individual bits to names like `THROTTLER_TEMP_EDGE` or `THROTTLER_PPT0`,
 because the bit-to-reason mapping for this ASIC was not verified against
-primary source in this project. A nonzero bitmask already answers project
-032's question — some throttler fired — and is recorded verbatim for a later
+primary source in this project. A nonzero bitmask already answers the thermal
+question (did some throttler fire?). It is recorded verbatim for a later
 session to decode properly rather than guess now. `amd-smi` itself was
 rejected as the live per-sample source: one call across both cards measured
 0.56 s, more than double the 0.25 s sample budget.

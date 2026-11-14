@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import runpy
+import shutil
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ import pytest
 import yaml
 
 from inferference.experiment import cli
+from inferference.experiment.analysis.load import load_run
 from tests.test_experiment_preflight import _build_host as _build_preflight_host
 from tests.test_experiment_runner import _FakeResidentLoader, _make_host
 
@@ -177,6 +179,74 @@ def test_analyze_prints_json_and_optional_markdown(capsys: pytest.CaptureFixture
     assert report.startswith("# Analysis\n")
     assert "## Decode" in report
     assert "## Prefill" in report
+
+
+def _copy_run_fixture(dest: Path) -> Path:
+    shutil.copytree(_RUN_FIXTURE, dest)
+    return dest
+
+
+def test_analyze_reports_the_soak_rate_and_the_rate_per_band_watt() -> None:
+    record = load_run(_RUN_FIXTURE)
+
+    endpoints = cli._analyze_record(record, card=None, load_threshold_w=90.0)["endpoints"]
+
+    assert endpoints["soak_tok_s"] == pytest.approx(20 / 300)
+    assert endpoints["lane_sweep_tok_s"] is None
+    assert endpoints["tok_s_per_w"] == pytest.approx((20 / 300) / endpoints["band_power"])
+    assert endpoints["band_power"] == 156.5
+
+
+def test_analyze_reports_the_lane_sweep_rate(tmp_path: Path) -> None:
+    run_dir = _copy_run_fixture(tmp_path / "run")
+    stages = json.loads((run_dir / "stages.json").read_text())
+    request = dict(stages["stages"][0]["requests"][0])
+    stages["stages"].append(
+        {
+            "name": "lane_sweep",
+            "workload": "lane_sweep",
+            "concurrency": 2,
+            "started_mono": 400.0,
+            "ended_mono": 440.0,
+            "completed": True,
+            "stop_reason": None,
+            "requests": [{**request, "completion_tokens": 30}, {**request, "completion_tokens": 50}],
+        }
+    )
+    (run_dir / "stages.json").write_text(json.dumps(stages))
+
+    endpoints = cli._analyze_record(load_run(run_dir), card=None, load_threshold_w=90.0)["endpoints"]
+
+    assert endpoints["lane_sweep_tok_s"] == pytest.approx(2.0)
+    assert endpoints["soak_tok_s"] == pytest.approx(20 / 300)
+
+
+def test_the_rate_per_watt_is_unavailable_without_a_band_power(tmp_path: Path) -> None:
+    run_dir = _copy_run_fixture(tmp_path / "run")
+    declaration = json.loads((run_dir / "declaration.json").read_text())
+    del declaration["endpoints"]["band_c"]
+    (run_dir / "declaration.json").write_text(json.dumps(declaration))
+    analysis = cli._analyze_record(load_run(run_dir), card=None, load_threshold_w=90.0)
+
+    assert analysis["endpoints"]["soak_tok_s"] == pytest.approx(20 / 300)
+    assert analysis["endpoints"]["tok_s_per_w"] is None
+
+
+def test_the_rate_endpoints_are_unavailable_for_a_run_without_an_outcome(tmp_path: Path) -> None:
+    run_dir = _copy_run_fixture(tmp_path / "run")
+    (run_dir / "outcome.json").unlink()
+
+    endpoints = cli._analyze_record(load_run(run_dir), card=None, load_threshold_w=90.0)["endpoints"]
+
+    assert endpoints["soak_tok_s"] is None
+    assert endpoints["tok_s_per_w"] is None
+    with pytest.raises(cli.ExperimentCLIError, match="unavailable"):
+        cli._endpoint_value("soak_tok_s", {"endpoints": endpoints})
+
+
+@pytest.mark.parametrize("name", ["soak_tok_s", "lane_sweep_tok_s", "tok_s_per_w"])
+def test_compare_accepts_the_rate_endpoints(name: str) -> None:
+    assert cli._valid_endpoint_name(name)
 
 
 def _comparison_run(root: Path, condition: str, replicate: int, slope: float) -> Path:

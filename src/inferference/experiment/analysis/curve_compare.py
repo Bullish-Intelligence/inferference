@@ -19,7 +19,10 @@ A repeated value is not a turn.
 
 Run it as `python -m inferference.experiment.analysis.curve_compare [RUN ...]`.
 Each RUN is a run directory or an artifact root with one run directory.
-Pass `--fan-channel` to select channels. The default includes all channels.
+Pass `--fan-channel` to select channels. The default is the comma list in
+`INFERFERENCE_DUCT_FAN_CHANNELS` (declare it in `ci/runner/rig-local.sh`). With
+neither, the tool refuses. The case exhaust and unused ports do not count as
+the duct.
 
 Add `--json` for the full records.
 """
@@ -38,7 +41,15 @@ from typing import Any
 from inferference.telemetry import load_jsonl
 
 from .load import LoadError, load_run
-from .run_summary import RunSummaryError, _is_soak, _stages, resolve_run_dir, summarize_run
+from .run_summary import (
+    DUCT_CHANNELS_ENV,
+    RunSummaryError,
+    _is_soak,
+    _stages,
+    resolve_duct_channels,
+    resolve_run_dir,
+    summarize_run,
+)
 from .run_summary import _hottest_slope as _slope_over
 
 SLOPE_WINDOW_S = 60.0
@@ -166,7 +177,7 @@ def _stats(values: Sequence[float]) -> Stats | None:
 
 
 def soak_duct_series(
-    lines: Sequence[Mapping[str, Any]], windows: Sequence[tuple[float, float]], channels: Sequence[int] | None = None
+    lines: Sequence[Mapping[str, Any]], windows: Sequence[tuple[float, float]], channels: Sequence[int]
 ) -> tuple[list[float], list[float]]:
     """The mean duct PWM of each telemetry line in a soak window, and every duct rpm reading."""
     pwm_series: list[float] = []
@@ -175,7 +186,7 @@ def soak_duct_series(
         mono = line.get("monotonic")
         if not isinstance(mono, (int, float)) or not any(start <= mono <= end for start, end in windows):
             continue
-        ducts = [d for d in line.get("fan_ducts", ()) if channels is None or int(d["channel"]) in channels]
+        ducts = [d for d in line.get("fan_ducts", ()) if int(d["channel"]) in channels]
         if not ducts:
             continue
         pwm_series.append(sum(float(d["pwm"]) for d in ducts) / len(ducts))
@@ -184,7 +195,11 @@ def soak_duct_series(
 
 
 def curve_metrics(path: Path, *, fan_channels: Sequence[int] | None = None) -> CurveMetrics:
-    """Measure the run at `path`. Raises `RunSummaryError` when it cannot."""
+    """Measure the run at `path`. Raises `RunSummaryError` when it cannot.
+
+    The duct series covers `fan_channels`. The default is `resolve_duct_channels()`.
+    """
+    fan_channels = resolve_duct_channels(fan_channels)
     summary = summarize_run(path)
     run_dir = resolve_run_dir(path)
     try:
@@ -313,7 +328,12 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Compare fan-curve runs side by side (read-only).",
     )
     parser.add_argument("runs", nargs="+", type=Path, help="run directories or artifact roots")
-    parser.add_argument("--fan-channel", type=int, action="append", help="include this fan channel")
+    parser.add_argument(
+        "--fan-channel",
+        type=int,
+        action="append",
+        help=f"duct fan channel; repeat to add more (default: ${DUCT_CHANNELS_ENV})",
+    )
     parser.add_argument("--json", action="store_true", help="print the full records as JSON")
     return parser
 

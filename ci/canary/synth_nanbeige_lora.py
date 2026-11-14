@@ -3,7 +3,7 @@
 
 S3 (P2 seq-routing on a nanbeige base) and S5 (per-pass-hat behavior) need
 converted nanbeige LoRA adapters, and none exist on disk (the probe LoRAs are
-Ornith-shaped). The new
+shaped for another architecture). The new
 stock's conversion tooling (convert_lora_to_gguf.py) requires a HF-format
 adapter checkpoint; this script instead writes the adapter GGUF directly with
 gguf-py's GGUFWriter (the same writer convert_lora_to_gguf.py uses), which is
@@ -40,9 +40,9 @@ sys.path.insert(0, str(GGUF_PY))
 from gguf import GGUFWriter  # noqa: E402
 from gguf.constants import GGUFType, Keys  # noqa: E402
 
-# The physical layers of Nanbeige4.2-3B (22) and the weights a LoRA may target
+# The physical layers of the nanbeige test model (22) and the weights a LoRA may target
 # (the nanbeige GGUF's blk.N.* set, from gguf-py inspection of the model).
-# Overridable for other arches (e.g. Ornith = 32) via --n-layers/--arch.
+# Overridable for other arches (for example 32 layers) via --n-layers/--arch.
 N_PHYS = 22
 ARCH = "nanbeige"
 TARGET_WEIGHTS = ("attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down")
@@ -139,7 +139,7 @@ def main() -> int:
             # requires a.ne[0]==model.ne[0], b.ne[1]==model.ne[1],
             # a.ne[1]==b.ne[0]. With the writer transposing, numpy lora_a
             # (rank, ne0) stores ne [ne0, rank] and numpy lora_b (ne1, rank)
-            # stores ne [rank, ne1] — exactly the working Ornith probe's shapes
+            # stores ne [rank, ne1] — exactly the shapes of the working probe adapters
             # (reader: lora_a [in, rank] / lora_b [rank, out]).
             lora_a = rng.standard_normal((args.rank, ne0)).astype(np.float32) * args.weight_scale
             lora_b = rng.standard_normal((ne1, args.rank)).astype(np.float32) * args.weight_scale

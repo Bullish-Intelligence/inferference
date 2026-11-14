@@ -14,11 +14,16 @@ and `release()` removes the request and waits for the watchdog to fall back to
 its default. `arbitrate()` is a pure, I/O-free reference of the rule the
 watchdog itself must run on each of its passes; it lives here so a test can
 drive a fake watchdog with the real rule, not so this module can enforce it.
-nix-meta is the actual authority over the fan.
+The host's fan watchdog service is the actual authority over the fan.
 
 `read_power_state` and `verify_power_profile` are readback-only: they read the
 starred row of `pp_power_profile_mode` and the performance level, and compare
 them with what the spec declared. Neither writes anything.
+
+`read_cpu_state` and `verify_cpu_epp` do the same for the host CPU: the
+governor and the energy performance preference (EPP) of each CPU, and the
+`intel_pstate` status and `no_turbo` flag. The host owns these settings. This
+module only reads them.
 """
 
 from __future__ import annotations
@@ -38,9 +43,10 @@ from typing import Any, Protocol
 DEFAULT_REQUEST_FILE = Path("/run/arctic-fan/request")
 DEFAULT_STATUS_FILE = Path("/run/arctic-fan/status")
 # The profile the watchdog falls back to when no lease is active
-# (nix-meta arctic-fan-controller, `defaultProfile`).
+# (the fan controller's `defaultProfile`).
 DEFAULT_FAN_PROFILE = "curve-default"
 DEFAULT_DRM_ROOT = Path("/sys/class/drm")
+DEFAULT_CPU_ROOT = Path("/sys/devices/system/cpu")
 
 # Matches `inferference.telemetry._PP_PROFILE_LINE`. Re-implemented here,
 # rather than imported, so this module does not depend on a private name in
@@ -114,7 +120,7 @@ def arbitrate(
 
     This is a pure function: no I/O, no clock read, no file access. It exists
     so a test can drive a fake watchdog with the exact rule, not because this
-    module enforces anything on the real fan. **nix-meta's watchdog is the
+    module enforces anything on the real fan. **the host's watchdog is the
     actual authority**: it must implement this same rule on every pass over
     the real request and status files. This function never runs against
     hardware.
@@ -445,3 +451,52 @@ def verify_power_profile(declared: str, state: Mapping[int, Mapping[str, str]]) 
     }
     if mismatched:
         raise ControlError(f"power profile mismatch (expected {expected!r}): {mismatched}")
+
+
+def _read_optional(path: Path) -> str | None:
+    """Return the stripped text of `path`, or `None` when the file does not exist."""
+    try:
+        return path.read_text().strip()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ControlError(f"could not read {path}: {exc}") from exc
+
+
+def read_cpu_state(cpu_root: Path = DEFAULT_CPU_ROOT) -> dict[str, Any]:
+    """Read the governor and EPP of every CPU, and the `intel_pstate` state.
+
+    Read-only. A file that does not exist reads as `None`: a host without
+    `intel_pstate` has no `status` and no `no_turbo`. Keys of `governor` and
+    `epp` are CPU numbers as text, in numeric order.
+    """
+    cpus = sorted(
+        (int(path.name[3:]) for path in cpu_root.glob("cpu[0-9]*") if path.name[3:].isdigit()),
+    )
+    governor: dict[str, str | None] = {}
+    epp: dict[str, str | None] = {}
+    for cpu in cpus:
+        cpufreq = cpu_root / f"cpu{cpu}" / "cpufreq"
+        governor[str(cpu)] = _read_optional(cpufreq / "scaling_governor")
+        epp[str(cpu)] = _read_optional(cpufreq / "energy_performance_preference")
+    return {
+        "governor": governor,
+        "epp": epp,
+        "intel_pstate_status": _read_optional(cpu_root / "intel_pstate" / "status"),
+        "no_turbo": _read_optional(cpu_root / "intel_pstate" / "no_turbo"),
+    }
+
+
+def verify_cpu_epp(declared: str, state: Mapping[str, Any]) -> None:
+    """Refuse with `ControlError` unless every CPU reads the declared EPP.
+
+    A host that exposes no EPP file fails the check: the run cannot prove the
+    declared value.
+    """
+    epp: Mapping[str, str | None] = state.get("epp", {})
+    readable = {cpu: value for cpu, value in epp.items() if value is not None}
+    if not readable:
+        raise ControlError(f"cpu_epp {declared!r} declared, but no CPU exposes energy_performance_preference")
+    mismatched = {cpu: value for cpu, value in readable.items() if value != declared}
+    if mismatched:
+        raise ControlError(f"cpu_epp mismatch (expected {declared!r}): {mismatched}")

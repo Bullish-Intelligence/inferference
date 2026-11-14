@@ -119,7 +119,7 @@ def test_budget_refuses_overcommit_and_lists_what_is_resident() -> None:
         plan_reconcile(placement, specs, loaded_now=[], router_models_max=8, free_mib=_card)
     msg = str(exc.value)
     assert "REFUSED" in msg
-    # The owner has to be able to choose a victim, so both must be listed with sizes.
+    # The operator has to be able to choose a victim, so both must be listed with sizes.
     assert "big" in msg and "small" in msg
     assert "OVER BY" in msg
     assert "nothing was evicted" in msg.lower()

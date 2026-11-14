@@ -31,7 +31,7 @@ The emitter is `ci/build/build-llamacpp.sh`.
 | `repo` | string | git remote the source tree came from (defaults to the fork `https://github.com/Bullish-Design/llama-infernal`; `--repo` overrides) | no |
 | `ref_requested` | string | the `--ref` value as given (branch name, tag, sha, or `local:path`) | no |
 | `ref_built` | string | short sha of the checked-out tip actually built (a branch ref resolves to its tip) | no |
-| `profile` | string | build profile: `cpu-light` / `cuda-3060` / `cuda-3060-server` / `p2fork` / `p2fork-server` | no (but is the `build_id` fallback, below) |
+| `profile` | string | build profile: `cpu-light` / `cuda-3060` / `cuda-3060-server` / `p2fork` / `p2fork-server` / `vulkan-mi25` / `vulkan-mi25-server` / `vulkan-mi25-p2fork-server` / `vulkan-p2fork` | no (but is the `build_id` fallback, below) |
 | `cmake_flags` | string | the full cmake flag set used | no |
 | `ggml_lib` | string | basename of the built `libggml.so.<ver>` (e.g. `libggml.so.0.16.0`) | no |
 | `ggml_version` | string | same as `ggml_lib` — **read** | **yes** |
@@ -43,6 +43,8 @@ The emitter is `ci/build/build-llamacpp.sh`.
 | `features` | list[string] | the fork feature branches folded into this tree — one entry per `feat/*` branch, e.g. `["p2-mixed-batch-lora"]`. **Derived from ancestry**, never hardcoded: every `refs/remotes/origin/feat/*` branch whose tip is an ancestor of the built ref is listed (auto-discovers new branches; `[]` for stock builds; skipped for `local:` trees). Additive key — no reader depends on it yet; a future diagnostics reader may probe it to select the library's capability surface | no |
 | `server_built` | bool | `true` iff this build produced `<out>/bin/llama-server`. Only the `*-server` profiles (`p2fork-server`, `cuda-3060-server`) do; every other profile emits `false`. The build fails closed (exit 3) if it claims to build the server and then finds no binary, so `true` always means the file exists beside the lib set | no |
 | `server_seq_routing` | bool | `true` iff the server binary in **this build** calls the fork's per-sequence routing API. **Derived from the compiled source**, not from the profile name: the script greps `tools/server/` for `llama_set_seq_adapter` in the tree it just built, the same fail-closed shape as the `include/llama.h` check that guards `seq_adapter_routing`. A `p2fork-server` build of a stock `tools/server/` therefore emits `false` — which is the correct answer for 005-server-seq-routing stage 1. It flips to `true` only when the routed-server edits land. `server_built=false` forces `false` | no |
+| `path_prefix_maps` | string | the fixed tokens that replace the source and build paths in the compiled code: `"/llama.cpp/src /llama.cpp/build"`. Additive key (2026-11-13). It records that the build used `-ffile-prefix-map`, so whole-file hashes are comparable across lanes on the same host CPU, devenv.lock and ccache setting (see "Reproducible hashes" below) | no |
+| `vulkan_residency_patch_sha256` | string | sha256 of `ci/build/patches/vulkan-residency.patch` when the script applied it, else `""`. The script applies it when the built commit is `ecc0cb0d34e17595ff0546b89c44fa100d076c0d`, for every profile. A patched build also gets the build id suffix `-residency-<first 12 hex>`. Additive key | no |
 
 ### `ggml_lib` / `ggml_version` named the unversioned link until 2026-08-25
 
@@ -81,7 +83,7 @@ and never parses the version out of it.
    short sha). Additive-only means we may add new keys later; we may never
    rename or drop existing ones.
 5. `server_built` / `server_seq_routing` are additive-only (added 2026-08-24 for
-   005-server-seq-routing spike S4). Every existing key is byte-identical before
+   the server sequence-routing build). Every existing key is byte-identical before
    and after, and every profile other than `p2fork-server` emits `false` for
    both. `seq_adapter_routing` describes the **library**; `server_seq_routing`
    describes the **server binary**. The two are independent: a `p2fork-server`
@@ -115,6 +117,140 @@ provenance checks, and `seq_adapter_routing: true`. It differs in three ways:
 The binary lands at `<out>/bin/llama-server`, beside `<out>/lib/`, so
 `<out>/build-manifest.json` stays the lib dir's parent — the layout
 `_build_manifest` looks in first (see "How the contract is read" below).
+
+## The `vulkan-p2fork` profile
+
+`vulkan-p2fork` is the library-only Vulkan profile of the P2 fork. It belongs to
+the `p2fork` family (`is_p2fork=1`), so it shares the `src-p2fork` checkout, both
+fail-closed provenance checks and `seq_adapter_routing: true`. It shares the flag
+arm of the Vulkan profiles: `-DGGML_CUDA=OFF -DGGML_VULKAN=ON`. It builds only
+the `llama` target. `server_built` and `server_seq_routing` are `false`. The
+profile name holds no hardware, because the Vulkan backend picks the device at
+run time. The residency patch does require hardware: a device with a
+DeviceLocal, HostVisible and HostCoherent memory type (a large BAR), and no
+other Vulkan device runs the patched build. See "Hardware requirement" in
+`ci/build/patches/README.md`.
+
+When the built commit is `ecc0cb0d34e17595ff0546b89c44fa100d076c0d`, the script
+applies `ci/build/patches/vulkan-residency.patch` with the same code as the
+server profile. The manifest then records the patch hash in
+`vulkan_residency_patch_sha256` and the flags in `cmake_flags`. The build id gets
+the suffix `-residency-<first 12 hex of the patch hash>`. For another commit the
+patch is not applied and `vulkan_residency_patch_sha256` is empty.
+
+The lib set is in `<out>/lib` (`libllama`, `libggml*`, `libggml-vulkan.so`) and
+the headers are in `<out>/include`. `ci/runner/run-suite.sh --out <out>` and
+`ci/gates/cffi_bindgen.py` (`--profile vulkan-p2fork`) read this layout.
+
+## Reproducible hashes: the lane path does not change the bytes
+
+Since 2026-11-13 the lane or directory of a build does not
+change its `bin/` and `lib/` files. One profile, one ref and one patch give
+byte-identical files in any lane, under these conditions:
+
+- The host CPU is the same. `GGML_NATIVE=ON` compiles with `-march=native`, so a
+  different CPU gives different code.
+- The `devenv.lock` is the same. The RUNPATH keeps the nix store paths, and
+  they change with the lock.
+- ccache is on in both builds (see the ccache item below).
+- The Mode A wheel is excluded (see the Mode A item below).
+
+When these hold, whole-file `sha256` values are comparable across lanes. Before
+this change they were not: two lane-dependent byte groups made every ggml
+library differ. Do not read the claim wider than the list.
+
+What the build does:
+
+- **Fixed source and build paths.** `build-llamacpp.sh` passes
+  `-ffile-prefix-map=<path>=<token>` through `CMAKE_C_FLAGS` and
+  `CMAKE_CXX_FLAGS` (and, with the CUDA flags, through `-Xcompiler` in
+  `CMAKE_CUDA_FLAGS`). It maps the `src-active` link, the real source tree and
+  the build dir. The tokens are `/llama.cpp/src` and `/llama.cpp/build`. The
+  `GGML_ASSERT` strings in `.rodata` (`__FILE__`) then hold the tokens, and the
+  RIP-relative code in `libggml-base` no longer shifts with the lane name.
+  The manifest key `path_prefix_maps` names the tokens. `cmake_flags` holds no
+  path, so the manifest stays the same in every lane.
+- **ccache.** The build sets `CCACHE_BASEDIR` to the garage dir, so ccache
+  hashes every path as relative to the build dir (`../src-active/...`), the same
+  in every lane. It sets `CCACHE_IGNOREOPTIONS=-ffile-prefix-map=*`, because the
+  map options name the lane and do not change the object. A second lane then
+  hits the first lane's cache. Measured: a cold `vulkan-p2fork` build takes
+  about 350 s; the same build in another lane takes about 105 s.
+  ccache also rewrites the include paths. A build with ccache turned off
+  (`CCACHE_DISABLE=1`, or no ccache) gives a slightly different string for one
+  header assert (`ggml-vulkan/../ggml-impl.h` against `ggml-impl.h`). Two builds
+  made with the same ccache setting match in any lane. Do not compare a build
+  with ccache to a build without it. The same holds for a build on another host
+  CPU or with another `devenv.lock`.
+- **RUNPATH.** `-DCMAKE_SKIP_BUILD_RPATH=ON` stops cmake from writing the
+  build-tree path. The collect step then sets the RUNPATH of every file in
+  `lib/` and `bin/`, for every profile. A lib gets `$ORIGIN`. A binary gets
+  `$ORIGIN/../lib`. The step keeps the nix-store entries (glibc, gcc, the
+  vulkan loader). It drops entries under the garage, the source tree or the
+  build tree, empty entries, and the `devenv-shell-env` entry (that store path
+  is a file, not a directory, and its hash changes with the lane). The build
+  then reads every RUNPATH back with `patchelf --print-rpath` and exits 3 if one
+  still names the build location. Check by hand with `readelf -d <file>`.
+- **glslc.** `glslc` leaves some bits unset in a few SPIR-V constants, and the
+  bits depend on the length of its path arguments. The shader `tri_f16` showed
+  it: two lanes gave two values for the upper half of one f16 constant. Vulkan
+  profiles pass `-DVulkan_GLSLC_EXECUTABLE=ci/build/glslc-stable.sh`. The
+  wrapper runs the real `glslc` (`GLSLC_REAL`) with paths of fixed length, under
+  a short temp dir, and fixes the dependency file afterwards.
+- **Mode A wheel.** `mode-a-build.sh` sets `CFLAGS` and `CXXFLAGS` with a
+  `-ffile-prefix-map` for the vendored source path. The wheel RUNPATH was
+  already `$ORIGIN` (the vendored `CMakeLists.txt` sets `INSTALL_RPATH`).
+  The wheel build does not use the glslc wrapper. Its `CMAKE_ARGS` go into the
+  committed `modea-version-tuple.json`, and the wrapper path names the lane. A
+  Vulkan wheel can therefore still differ in the shader constant bits above.
+  The lane proof below does not cover the wheel.
+
+Paths that stay on purpose, outside the hashed files:
+
+- `build-manifest.json` is not in `bin/` or `lib/`. It holds no lane path.
+- `modea-provenance.json` (written by `mode-a-server.sh`) keeps
+  `source_out_dir`, the build directory at publication time, with a note that
+  the artefact is proven by `artefact_sha256`.
+- `<build dir>/SOURCE-TREE` and the cmake cache hold the real paths. They are
+  in the build garage, not in the artefact.
+
+### Old releases do not match a new build
+
+The published release `...-residency-08b5c579d8b1` (the server build in
+`ci/modea/server/`) was built before this change. Its libraries carry the lane
+path in `RUNPATH` and in the assert strings. A new build of the same ref and
+patch will NOT have the same hashes. This is expected. Do not republish the
+release to make them match. Its `artefact_sha256` still describes the files that
+were published.
+
+### Proof (2026-11-13)
+
+`vulkan-p2fork` at `ecc0cb0d34e17595ff0546b89c44fa100d076c0d`, built in the
+lanes `reproducible-builds` and `repro-b`: every `lib/` file has the same
+sha256 in both.
+
+## Profiles in the workflow cells
+
+The workflows in `ci/workflows/` run on the local host. Each GPU cell names a Vulkan
+profile. No cell names a CUDA profile. A test (`tests/test_build_profiles.py`)
+enforces this.
+
+| Workflow | Cell | Profile | Why it fits |
+|---|---|---|---|
+| `build.yml` | build / vulkan-p2fork | `vulkan-p2fork` | the fork library and headers |
+| `build.yml` | build / server | `vulkan-mi25-p2fork-server` | `bin/llama-server`, `server_built true` |
+| `bindgen.yml` | bindgen / GPU library | `vulkan-p2fork` | headers for the cdef, libs for SMOKE |
+| `bindgen.yml` | bindgen / server | `vulkan-mi25-p2fork-server` | same libllama, same ABI anchor |
+| `bench.yml` | bench | `vulkan-p2fork` | the runners load the library only |
+| `suites.yml` | the GPU library suites | `vulkan-p2fork` | `run-suite.sh --out` reads `lib/` and the manifest |
+| `suites.yml` | `p2-server-seq-routing` | `vulkan-mi25-p2fork-server` | the probe needs `bin/llama-server` |
+
+`p2-server-seq-routing` also needs a model of the nanbeige architecture. A host
+with no such model sets no `MODEL_NANBEIGE`. The cell stays, and `run-suite.sh`
+fails it with `inventory gap: MODEL_NANBEIGE is not set`.
+
+The CUDA profiles `cuda-3060`, `cuda-3060-server`, `p2fork` and `p2fork-server`
+stay in the build script for a CUDA host.
 
 ## Example (p2fork build of integration with both features merged, 2026-08-02)
 
@@ -175,6 +311,15 @@ Two consequences to know:
   <build dir>` compiles whatever the link points at then, not what produced that
   dir. The script itself is safe — it wipes and reconfigures every run.
 - `prune-builds.sh` skips the symlink, so it never counts as a stale clone.
+
+## Licence notice
+
+`build-llamacpp.sh` copies the llama.cpp `LICENSE` file to `<out>/LICENSE.llama.cpp`
+and exits 3 when the source tree has none. `mode-a-server.sh` publishes the file
+beside the server, and `mode-a-build.sh` puts it in the wheel package dir
+(`llama_cpp/`). The file is outside `bin/` and `lib/`, so no file hash changes.
+Only builds made after this change carry it. `THIRD_PARTY.md` at the repository
+root names the third-party licences.
 
 ## Housekeeping
 

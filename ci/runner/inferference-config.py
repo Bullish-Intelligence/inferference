@@ -1,9 +1,12 @@
 """Resolve one server role's YAML config into a llama-server argv.
 
-The runtime configuration lives in YAML under ``~/.config/inferference/`` and NOT
-in the Nix module. That is deliberate: editing a model path or a pool should be
-`$EDITOR` plus `systemctl --user restart`, never a NixOS rebuild. The module
-wires the unit; this file decides what the unit runs.
+The runtime configuration lives in YAML in the config dir and NOT in the Nix
+module. The launcher picks the config dir like the reconcile CLI:
+``$INFERFERENCE_CONFIG_DIR``, then ``/etc/inferference`` when it exists, then
+``~/.config/inferference`` with a warning. The split is deliberate: editing a
+model path or a pool should be `$EDITOR` plus `systemctl --user restart`, never
+a NixOS rebuild. The module wires the unit; this file decides what the unit
+runs.
 
     inferference-config.py <role> [--config-dir DIR] [--print-argv|--print-summary]
 

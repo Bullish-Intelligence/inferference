@@ -9,7 +9,7 @@ Verdict (deterministic greedy, temperature 0):
        (delta applied + per-adapter distinct)
   NO-GO if base == probe-a (delta silently dropped on this arch/lib)
 
-GPU-only: CUDA_VISIBLE_DEVICES=0, n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
+GPU-only: one card pinned (LLAMA_CI_GPU), n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ def main() -> int:
     note("run 4/4: base + probe-b")
     b = greedy_tokens(str(args.model), str(args.lora_b), args.prompt, args.n_tokens, args.n_ctx, args.seed)
     # No require_gpu0_only here: each run closes its model (no resident snapshot);
-    # GPU isolation is enforced by CUDA_VISIBLE_DEVICES=0 + the gpu-serialized flock.
+    # GPU isolation is enforced by the device pin + the GPU lease.
     note("all runs complete; comparing")
 
     base_reproducible = base == base2

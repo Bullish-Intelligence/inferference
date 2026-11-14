@@ -73,7 +73,11 @@ load-bearing:
 
 - **`suites/`** answers "does this build carry this capability", pass or fail. A
   `suite.json` declares a capability probe plus pytest tests, classified
-  fail-closed by `ci/runner/run-suite.sh`.
+  fail-closed by `ci/runner/run-suite.sh`. It names the model role it needs
+  (`env.MODEL_ROLE`), never a model file. The machine inventory fills the role,
+  and an unfilled role fails the suite by naming the variable. Other inventory
+  variables (probe adapters, tokenizer) go in `env.MODEL_VARS`, and a GPU run
+  where every GPU test skipped gives SKIP, never PASS. README.md lists the roles.
 - **An experiment** answers "what does this measure", as a quantity with an
   uncertainty. A declarative spec names the fixed factors, the factor under
   test, the workloads and the replication, and is executed by
@@ -151,6 +155,25 @@ one child process per model. The shape is:
   for each model that should be resident. A crashed child is reported
   `unloaded` with `exit_code` set; a deliberately unloaded one has `exit_code`
   null. That difference is the health signal.
+- **`systemctl reload` runs the reconcile.** `ExecReload` of the router unit is
+  `ci/runner/inferference-router-reload.sh`. Both units that this repository
+  ships carry it: the `systemd --user` unit that `nix/nixos-module.nix`
+  generates, and the template `ci/runner/inferference-router.service.in`. A
+  machine that defines its own system unit must add the same line. The script
+  runs as the unit user, takes a `flock` so that two reloads cannot overlap,
+  and `exec`s `inferference-reconcile.py apply`. It exits non-zero on any
+  refusal or failed residency proof. A failed reload never stops the router.
+  The unit user owns the preset file, so this is the way to refresh it after
+  the config changes.
+- **A reload has one deadline.** One `--timeout` (default 600 s in the reload
+  script) covers every load wait and router call of the whole `apply`. After
+  it, `apply` can use at most 240 s more, so a reload ends within 840 s. That
+  is under `TimeoutStartSec=900`, which systemd also applies to `ExecReload`.
+  The script refuses a deadline that does not fit the unit timeout.
+- **A reload that changes nothing touches nothing.** With no model to load or
+  unload and a preset that matches, `apply` exits zero at once: no write, no
+  verify, no unload. A reload that fails after a change unloads only the models
+  that it changed. Models that it did not change stay resident.
 - **The GPU lease governs build and gate jobs, not serving.** A lease that finds
   no room waits a bounded time and then refuses, naming the card that is short.
   Free a card explicitly and re-run; do not read a wait as a queue.

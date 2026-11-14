@@ -1,7 +1,7 @@
 """Placement proof for a local eval run.
 
-A speed number from this rig means nothing without it. Measured 2026-09-04 and
-re-confirmed 2026-09-05 (007 reports 01 and 04): a model that does not fit its
+A speed number from a rig means nothing without it. Measured 2026-09-04 and
+re-confirmed 2026-09-05: a model that does not fit its
 card does NOT fail to load. The router returns ``{"success":true}``, reports the
 child ``loaded``, assigns every layer to the named Vulkan device — and serves
 from host memory over PCIe at about **1/14th** the speed. Card1 went to

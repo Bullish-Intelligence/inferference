@@ -17,8 +17,7 @@
 # different route, so this gate checks both halves before it cycles anything.
 #
 # ONE CLEAN STOP IS NOT PROOF. The defect is a race that fired on about 11% of
-# stops. Run enough cycles to mean something: 10 is the floor 027 section 8 asks
-# for.
+# stops. Run enough cycles to mean something: 10 is the floor.
 #
 # Usage:
 #   ci/gates/router_stop_gate.sh                 # read-only checks, no restart
@@ -83,7 +82,7 @@ echo
 kill_mode="$(_show KillMode)"
 [[ "$kill_mode" == "mixed" ]] \
   && _ok "KillMode" "mixed" \
-  || _bad "KillMode" "got '${kill_mode}', want 'mixed' — the unit is stale; bump the nix-meta inferference pin and rebuild FROM THE TRUNK REF"
+  || _bad "KillMode" "got '${kill_mode}', want 'mixed' — the unit is stale; update the inferference pin of the host configuration and rebuild FROM THE TRUNK REF"
 
 stop_usec="$(_show TimeoutStopUSec)"
 [[ "$stop_usec" == "1min 30s" || "$stop_usec" == "90s" ]] \
@@ -125,13 +124,23 @@ else
 fi
 
 # ------------------------------------------------------------------- the router
-port="$(python3 -I -c "
-import sys,pathlib
+# The config dir follows the reconcile CLI default (the one source of truth):
+# $INFERFERENCE_CONFIG_DIR, then /etc/inferference, then ~/.config/inferference
+# with a warning. Python needs the library to run the CLI: set
+# $INFERFERENCE_PYTHON when python3 lacks it. On failure the gate says so and
+# uses the router default port.
+cfg_dir="$("${INFERFERENCE_PYTHON:-python3}" "${here}/runner/inferference-reconcile.py" config-dir 2>/dev/null)" || cfg_dir=""
+[[ -n "$cfg_dir" ]] || _info "config dir" "unresolved: using router port 8100 (set INFERFERENCE_PYTHON)"
+port="$(INFERFERENCE_GATE_CFG="$cfg_dir" python3 -I -c "
+import os,sys,pathlib
 try:
     import yaml
 except Exception:
     print(8100); sys.exit()
-p = pathlib.Path.home()/'.config/inferference/placement.yaml'
+d = os.environ.get('INFERFERENCE_GATE_CFG')
+if not d:
+    print(8100); sys.exit()
+p = pathlib.Path(d)/'placement.yaml'
 try:
     print((yaml.safe_load(p.read_text()).get('router') or {}).get('port', 8100))
 except Exception:
@@ -171,7 +180,7 @@ echo
 if (( fails > 0 )); then
   echo "!! ${fails} pre-check(s) failed. NOT cycling the router." >&2
   echo "!! Fix the deployment first: both halves must land together, or a stop still" >&2
-  echo "!! delivers two signals by a different route (027 section 5)." >&2
+  echo "!! delivers two signals by a different route." >&2
   exit 1
 fi
 

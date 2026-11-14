@@ -36,11 +36,18 @@
 #
 # Environment (all optional; test overrides first):
 #   EVICT_CONFIG_ROOT      placement config dir with one resident model per
-#                          card. Used for the evict device lookup (exported as
-#                          INFERFERENCE_CONFIG_DIR for the reconcile tool) and
-#                          for the run's --config-root. Default:
-#                          $INFERFERENCE_CONFIG_DIR, else
-#                          ~/.config/inferference-033-dual.
+#                          card. Used for the evict device lookup and for the
+#                          run's --config-root. When set, the script exports it
+#                          as INFERFERENCE_CONFIG_DIR for the reconcile tool.
+#                          When unset, the script sets no config variable:
+#                          $INFERFERENCE_CONFIG_DIR passes through, and the
+#                          reconcile tool picks the dir. The script asks
+#                          `inferference-reconcile.py config-dir` for it. That
+#                          tool owns the default order:
+#                          $INFERFERENCE_CONFIG_DIR, then /etc/inferference
+#                          when it exists, then ~/.config/inferference with a
+#                          warning. The script never sets
+#                          INFERFERENCE_PRESET_INI; `evict` does not read it.
 #   EVICT_ROUTER           router base URL forwarded as --router to evict.
 #   EVICT_SERVER_BIN       server binary for --server-bin. Default:
 #                          ci/modea/server/current/bin/llama-server.
@@ -93,7 +100,6 @@ CARD_B="${BASH_REMATCH[2]}"
 [ "$CARD_A" != "$CARD_B" ] || die "--cards must name two different cards (got '$CARDS')"
 CARD_LIST=("$CARD_A" "$CARD_B")
 
-CONFIG_ROOT="${EVICT_CONFIG_ROOT:-${INFERFERENCE_CONFIG_DIR:-$HOME/.config/inferference-033-dual}}"
 SYSFS_ROOT="${EVICT_SYSFS_ROOT:-/sys/class/drm}"
 VRAM_MAX_MIB="${EVICT_VRAM_MAX_MIB:-1024}"
 DRAIN_TIMEOUT_S="${EVICT_DRAIN_TIMEOUT_S:-300}"
@@ -102,7 +108,16 @@ STOCK_BLOB="${EVICT_STOCK_PP_TABLE:-$STOCK_BLOB_DEFAULT}"
 SERVER_BIN="${EVICT_SERVER_BIN:-$SERVER_BIN_DEFAULT}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
-export INFERFERENCE_CONFIG_DIR="$CONFIG_ROOT"
+# One source of truth for the default config dir: the reconcile CLI. This
+# script sets INFERFERENCE_CONFIG_DIR only when the caller sets EVICT_CONFIG_ROOT.
+if [ -n "${EVICT_CONFIG_ROOT:-}" ]; then
+    CONFIG_ROOT="$EVICT_CONFIG_ROOT"
+    export INFERFERENCE_CONFIG_DIR="$CONFIG_ROOT"
+else
+    CONFIG_ROOT="$("$PYTHON_BIN" "$REPO_ROOT/ci/runner/inferference-reconcile.py" config-dir)" \
+        || die "the reconcile tool could not name the config dir (set EVICT_CONFIG_ROOT or INFERFERENCE_CONFIG_DIR)"
+fi
+export EVICT_RESOLVED_CONFIG_DIR="$CONFIG_ROOT"
 
 [ -n "$SPEC" ] || die "no experiment spec given: pass one as the first argument (this repository ships no experiment specs)"
 [ -f "$SPEC" ] || die "spec not found: $SPEC (pass an absolute path, or run from the spec tree)"
@@ -126,7 +141,7 @@ if [ "$EVICT" = "1" ]; then
 import os
 from pathlib import Path
 from inferference.reconcile import read_config_dir
-placement, _ = read_config_dir(Path(os.environ["INFERFERENCE_CONFIG_DIR"]))
+placement, _ = read_config_dir(Path(os.environ["EVICT_RESOLVED_CONFIG_DIR"]))
 card = int(os.environ["EVICT_CARD"])
 for device in placement.devices:
     if device.card == card:

@@ -14,7 +14,8 @@ def test_xgrammar_compiler_matcher_and_numpy_bitmask_contract() -> None:
     import xgrammar as xgr
 
     assert "vocab_size" in inspect.signature(xgr.TokenizerInfo.from_huggingface).parameters
-    assert "strict_mode" in inspect.signature(xgr.GrammarCompiler.compile_json_schema).parameters
+    compile_parameters = inspect.signature(xgr.GrammarCompiler.compile_json_schema).parameters
+    assert {"strict_mode", "any_whitespace", "separators", "max_whitespace_cnt"} <= set(compile_parameters)
     assert "debug_print" in inspect.signature(xgr.GrammarMatcher.fill_next_token_bitmask).parameters
 
     # The model's logits dimension, rather than the tokenizer's number of

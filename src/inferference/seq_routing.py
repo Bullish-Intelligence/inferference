@@ -34,7 +34,7 @@ SEQ_ROUTING_SYMBOLS: tuple[str, ...] = ("llama_set_seq_adapters", "llama_set_seq
 # pair above: an ``integration`` lib carries the pair and not this symbol.
 #
 # The bindgen cdef is deliberately NOT extended with it — the hats precedent
-# (``LOOP_ROUTING_SYMBOLS`` below, step-3 decision): the fork-paired cdef must
+# (``LOOP_ROUTING_SYMBOLS`` below): the fork-paired cdef must
 # keep compiling against builds that lack the symbol, so it is proven by direct
 # resolution instead.
 SEQ_ADAPTER_SCALED_SYMBOL: str = "llama_set_seq_adapter_scaled"
@@ -124,7 +124,7 @@ class SeqRoutingBinding:
         A lib carrying the stage 0.5 node-budget fix returns ``-1`` for a
         ``seq_id`` at or past ``n_seq_max`` and this raises. A lib without the fix
         returns ``0`` for the same rejected call, and the out-of-range sequence
-        then reads ``seq_adapter_map`` past its end (S11-P1). The raise is the
+        then reads ``seq_adapter_map`` past its end. The raise is the
         intended new behaviour, not a regression.
 
         The call also resets the sequence's scale to ``1.0``. Use
@@ -138,7 +138,7 @@ class SeqRoutingBinding:
 
         The scale rides the per-decode mask, so two sequences may share one pool
         slot at two scales inside one ``llama_decode``, and changing a scale
-        forces no graph re-reserve (S9: 1.011x against 2.175x for the pool-side
+        forces no graph re-reserve (measured: 1.011x against 2.175x for the pool-side
         form). ``scale`` 1.0 is bit-identical to :meth:`set_seq_adapter`.
 
         Raises :class:`SeqRoutingUnavailable` when the lib lacks the symbol.

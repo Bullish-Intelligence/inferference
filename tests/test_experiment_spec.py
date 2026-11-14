@@ -292,3 +292,74 @@ def test_placement_accepts_the_stock_table_arm_of_the_250_w_spec() -> None:
     raw["fixed"]["placement"] = {"mode": "per-card", "cards": [0, 1], "on_arm_bound": "continue_peer"}
 
     assert ExperimentSpec.model_validate(raw).fixed.placement is not None
+
+
+def test_server_defaults_to_none_and_stays_out_of_the_dump() -> None:
+    spec = ExperimentSpec.model_validate(_spec_dict())
+
+    assert spec.fixed.server is None
+    assert "server" not in spec.fixed.model_dump(mode="json")
+
+
+def test_a_valid_server_extra_args_block_loads_and_stays_in_the_dump() -> None:
+    raw = _spec_dict()
+    raw["fixed"]["server"] = {"extra_args": {"threads": "2", "spec-type": "ngram-mod"}}
+
+    spec = ExperimentSpec.model_validate(raw)
+
+    assert spec.fixed.server is not None
+    assert spec.fixed.server.extra_args == {"threads": "2", "spec-type": "ngram-mod"}
+    assert spec.fixed.model_dump(mode="json")["server"] == {"extra_args": {"threads": "2", "spec-type": "ngram-mod"}}
+
+
+@pytest.mark.parametrize(
+    ("server", "message"),
+    [
+        ({"extra_args": {"--threads": "2"}}, "without dashes"),
+        ({"extra_args": {"": "2"}}, "without dashes"),
+        ({"extra_args": {"thread count": "2"}}, "without dashes"),
+        ({"extra_args": {"port=1": "x"}}, "must not contain"),
+        ({"extra_args": {"ngl": "0"}}, "runner sets itself"),
+        ({"extra_args": {"gpu-layers": "0"}}, "runner sets itself"),
+        ({"extra_args": {"main-gpu": "1"}}, "runner sets itself"),
+        ({"extra_args": {"tensor-split": "1,1"}}, "runner sets itself"),
+        ({"extra_args": {"n-cpu-moe": "4"}}, "runner sets itself"),
+        ({"extra_args": {"cpu-moe": "1"}}, "runner sets itself"),
+        ({"extra_args": {"port": "1"}}, "runner sets itself"),
+        ({"extra_args": {"threads": 2}}, "extra_args"),
+        ({}, "extra_args"),
+        ({"extra_args": {}, "other": 1}, "other"),
+    ],
+)
+def test_a_bad_server_block_is_refused(server: dict[str, Any], message: str) -> None:
+    raw = _spec_dict()
+    raw["fixed"]["server"] = server
+
+    with pytest.raises(Exception, match=message):
+        ExperimentSpec.model_validate(raw)
+
+
+def test_host_cpu_epp_defaults_to_none_and_stays_out_of_the_dump() -> None:
+    spec = ExperimentSpec.model_validate(_spec_dict())
+
+    assert spec.fixed.host.cpu_epp is None
+    assert spec.fixed.model_dump(mode="json")["host"] == {"loadavg_1m_max": 2.0}
+
+
+def test_host_cpu_epp_loads_and_stays_in_the_dump() -> None:
+    raw = _spec_dict()
+    raw["fixed"]["host"]["cpu_epp"] = "performance"
+
+    spec = ExperimentSpec.model_validate(raw)
+
+    assert spec.fixed.host.cpu_epp == "performance"
+    assert spec.fixed.model_dump(mode="json")["host"] == {"loadavg_1m_max": 2.0, "cpu_epp": "performance"}
+
+
+@pytest.mark.parametrize("value", ["", "  ", 3])
+def test_a_bad_host_cpu_epp_is_refused(value: Any) -> None:
+    raw = _spec_dict()
+    raw["fixed"]["host"]["cpu_epp"] = value
+
+    with pytest.raises(Exception, match="cpu_epp"):
+        ExperimentSpec.model_validate(raw)

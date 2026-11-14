@@ -1,20 +1,79 @@
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index 510fb6892..b826800ef 100644
+index 510fb6892..e5e88a3f9 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -8092,9 +8092,8 @@ static void ggml_vk_ensure_sync_staging_buffer(vk_device& device, size_t size) {
+@@ -1060,6 +1060,7 @@ struct vk_device_struct {
+ 
+     vk::Fence fence;
+     vk_buffer sync_staging;
++    vk_buffer sync_staging_read;
+ 
+     ggml_backend_buffer_type buffer_type;
+ 
+@@ -1076,6 +1077,7 @@ struct vk_device_struct {
+         device.destroyFence(fence);
+ 
+         ggml_vk_destroy_buffer(sync_staging);
++        ggml_vk_destroy_buffer(sync_staging_read);
+ 
+         if (compute_queue) compute_queue->cmd_pool.destroy(device);
+         if (transfer_queue) transfer_queue->cmd_pool.destroy(device);
+@@ -8092,19 +8094,62 @@ static void ggml_vk_ensure_sync_staging_buffer(vk_device& device, size_t size) {
      if (device->sync_staging == nullptr || device->sync_staging->size < size) {
          VK_LOG_MEMORY("ggml_vk_ensure_sync_staging_buffer(" << size << ")");
          ggml_vk_destroy_buffer(device->sync_staging);
 -        device->sync_staging = ggml_vk_create_buffer_check(device, size,
--            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostCached,
--            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 +        device->sync_staging = ggml_vk_create_buffer(device, size,
 +            {vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});
++    }
++}
++
++// Readback staging must be cached host memory. A copy out of device-local host-visible
++// memory reads an uncached PCIe mapping at a few MiB/s. The backend allocates the block
++// once at init, before the residency baseline. It never grows, so GTT stays flat.
++// A read larger than the block goes through it in chunks (see ggml_vk_split_read).
++static constexpr size_t GGML_VK_SYNC_STAGING_READ_SIZE = 16u * 1024 * 1024;
++
++static void ggml_vk_init_sync_staging_read_buffer(vk_device& device) {
++    if (device->sync_staging_read == nullptr) {
++        VK_LOG_MEMORY("ggml_vk_init_sync_staging_read_buffer(" << GGML_VK_SYNC_STAGING_READ_SIZE << ")");
++        device->sync_staging_read = ggml_vk_create_buffer_check(device, GGML_VK_SYNC_STAGING_READ_SIZE,
+             vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostCached,
+             vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
      }
  }
  
-@@ -8102,9 +8101,8 @@ static void ggml_vk_ensure_sync_staging_buffer(ggml_backend_vk_context * ctx, si
++// One piece of a 2D read: rows of cols bytes that start at (row, col). A piece never
++// exceeds the read staging block.
++struct vk_read_chunk {
++    size_t row;
++    size_t rows;
++    size_t col;
++    size_t cols;
++};
++
++// Split a width x height read. Whole rows go together when a row fits in the block.
++// A wider row is cut by bytes, one row at a time.
++static std::vector<vk_read_chunk> ggml_vk_split_read(size_t width, size_t height) {
++    GGML_ASSERT(width > 0);
++    GGML_ASSERT(height > 0);
++    std::vector<vk_read_chunk> chunks;
++    if (width <= GGML_VK_SYNC_STAGING_READ_SIZE) {
++        const size_t rows_per_chunk = GGML_VK_SYNC_STAGING_READ_SIZE / width;
++        for (size_t row = 0; row < height; row += rows_per_chunk) {
++            chunks.push_back({ row, std::min(rows_per_chunk, height - row), 0, width });
++        }
++    } else {
++        for (size_t row = 0; row < height; row++) {
++            for (size_t col = 0; col < width; col += GGML_VK_SYNC_STAGING_READ_SIZE) {
++                chunks.push_back({ row, 1, col, std::min(GGML_VK_SYNC_STAGING_READ_SIZE, width - col) });
++            }
++        }
++    }
++    return chunks;
++}
++
+ static void ggml_vk_ensure_sync_staging_buffer(ggml_backend_vk_context * ctx, size_t size) {
      if (ctx->sync_staging == nullptr || ctx->sync_staging->size < size) {
          VK_LOG_MEMORY("ggml_vk_ensure_sync_staging_buffer(" << size << ")");
          ggml_vk_destroy_buffer(ctx->sync_staging);
@@ -26,7 +85,130 @@ index 510fb6892..b826800ef 100644
      }
  }
  
-@@ -17615,7 +17613,7 @@ static ggml_backend_buffer_type_t ggml_backend_vk_device_get_buffer_type(ggml_ba
+@@ -8362,11 +8407,15 @@ static bool ggml_vk_buffer_read_2d_async(vk_context subctx, vk_buffer& src, size
+         return false;
+     }
+ 
+-    // Fall back to staging buffer
++    // Fall back to staging buffer. This records one chunk. The caller splits a larger read
++    // (ggml_vk_split_read) and submits and copies out each chunk before the next one.
+     const size_t staging_size = width * height;
+-    ggml_vk_ensure_sync_staging_buffer(src->device, staging_size);
+-
+-    vk_buffer& staging_buffer = src->device->sync_staging;
++    // The backend init allocates the block. A device that never went through it gets the block
++    // here. The caller holds device->mutex, so two threads never create or share it unlocked.
++    ggml_vk_init_sync_staging_read_buffer(src->device);
++    vk_buffer& staging_buffer = src->device->sync_staging_read;
++    GGML_ASSERT(staging_buffer != nullptr);
++    GGML_ASSERT(staging_size <= staging_buffer->size);
+ 
+     std::vector<vk::BufferCopy> staging_slices(1);
+     if (width == spitch) {
+@@ -8435,19 +8484,35 @@ static void ggml_vk_buffer_read_2d(vk_buffer& src, size_t offset, void * dst, si
+     } else {
+         std::lock_guard<std::recursive_mutex> guard(src->device->mutex);
+ 
+-        vk_context subctx = ggml_vk_create_temporary_context(src->device->transfer_queue->cmd_pool);
+-        ggml_vk_ctx_begin(src->device, subctx);
+-        bool ret = ggml_vk_buffer_read_2d_async(subctx, src, offset, dst, spitch, dpitch, width, height, true);
+-        GGML_ASSERT(ret);
+-        ggml_vk_ctx_end(subctx);
+-
+-        ggml_vk_submit(subctx, src->device->fence);
+-        VK_CHECK(src->device->device.waitForFences({ src->device->fence }, true, UINT64_MAX), "vk_buffer_read_2d waitForFences");
+-        src->device->device.resetFences({ src->device->fence });
+-        ggml_vk_queue_command_pools_cleanup(src->device);
++        // Each chunk copies into the read staging block, submits, waits and copies out
++        // before the next chunk reuses the block. Pinned memory needs no staging.
++        auto read_chunk = [&](size_t row, size_t rows, size_t col, size_t cols) {
++            vk_context subctx = ggml_vk_create_temporary_context(src->device->transfer_queue->cmd_pool);
++            ggml_vk_ctx_begin(src->device, subctx);
++            bool ret = ggml_vk_buffer_read_2d_async(subctx, src, offset + row * spitch + col, (uint8_t *) dst + row * dpitch + col,
++                                                    spitch, dpitch, cols, rows, true);
++            GGML_ASSERT(ret);
++            ggml_vk_ctx_end(subctx);
++
++            ggml_vk_submit(subctx, src->device->fence);
++            VK_CHECK(src->device->device.waitForFences({ src->device->fence }, true, UINT64_MAX), "vk_buffer_read_2d waitForFences");
++            src->device->device.resetFences({ src->device->fence });
++            ggml_vk_queue_command_pools_cleanup(src->device);
++
++            for (auto& cpy : subctx->out_memcpys) {
++                memcpy(cpy.dst, cpy.src, cpy.n);
++            }
++        };
+ 
+-        for (auto& cpy : subctx->out_memcpys) {
+-            memcpy(cpy.dst, cpy.src, cpy.n);
++        vk_buffer pinned = nullptr;
++        size_t pinned_offset = 0;
++        ggml_vk_host_get(src->device, dst, pinned, pinned_offset);
++        if (pinned != nullptr) {
++            read_chunk(0, height, 0, width);
++        } else {
++            for (const vk_read_chunk & c : ggml_vk_split_read(width, height)) {
++                read_chunk(c.row, c.rows, c.col, c.cols);
++            }
+         }
+     }
+ }
+@@ -15994,34 +16059,19 @@ static void ggml_backend_vk_get_tensor_2d_async(ggml_backend_t backend, const gg
+     bool ret = ggml_vk_buffer_read_2d_async(compute_ctx, buf, src_offset, data, stride_tensor, stride_data, size, n_copies);
+ 
+     if (!ret) {
+-        const size_t staging_size = size * n_copies;
+-        ggml_vk_ensure_sync_staging_buffer(ctx, staging_size);
+-        ggml_vk_sync_buffers(nullptr, compute_ctx);
+-
+-        std::vector<vk::BufferCopy> slices(1);
+-        if (size == stride_tensor) {
+-            slices[0].srcOffset = src_offset;
+-            slices[0].dstOffset = 0;
+-            slices[0].size = staging_size;
+-        } else {
+-            slices.resize(n_copies);
+-            for (size_t i = 0; i < n_copies; i++) {
+-                slices[i].srcOffset = src_offset + i * stride_tensor;
+-                slices[i].dstOffset = i * size;
+-                slices[i].size = size;
+-            }
+-        }
+-
+-        compute_ctx->s->buffer->buf.copyBuffer(buf->buffer, ctx->sync_staging->buffer, slices);
+-
+-        if (size == stride_data) {
+-            deferred_memcpy(data, ctx->sync_staging->ptr, staging_size, &compute_ctx->out_memcpys);
+-        } else {
+-            for (size_t i = 0; i < n_copies; i++) {
+-                deferred_memcpy((uint8_t *)data + i * stride_data, (const uint8_t *)ctx->sync_staging->ptr + i * size, size, &compute_ctx->out_memcpys);
+-            }
++        // The read staging block belongs to the device, not to this context. Hold device->mutex
++        // for the whole loop, so a second context on the device cannot overwrite the block.
++        // Each chunk copies into the block and synchronizes (submit, wait, copy out) before
++        // the next chunk reuses the block.
++        std::lock_guard<std::recursive_mutex> guard(ctx->device->mutex);
++        for (const vk_read_chunk & c : ggml_vk_split_read(size, n_copies)) {
++            compute_ctx = ggml_vk_get_compute_ctx(ctx);
++            bool staged = ggml_vk_buffer_read_2d_async(compute_ctx, buf, src_offset + c.row * stride_tensor + c.col,
++                                                       (uint8_t *) data + c.row * stride_data + c.col,
++                                                       stride_tensor, stride_data, c.cols, c.rows, true);
++            GGML_ASSERT(staged);
++            ggml_vk_synchronize(ctx);
+         }
+-        ggml_vk_synchronize(ctx);
+     }
+ }
+ 
+@@ -17471,6 +17521,7 @@ ggml_backend_t ggml_backend_vk_init(size_t dev_num) {
+ 
+     ggml_backend_vk_context * ctx = new ggml_backend_vk_context;
+     ggml_vk_init(ctx, dev_num);
++    ggml_vk_init_sync_staging_read_buffer(ctx->device);
+ 
+     ggml_backend_t vk_backend = new ggml_backend {
+         /* .guid    = */ ggml_backend_vk_guid(),
+@@ -17615,7 +17666,7 @@ static ggml_backend_buffer_type_t ggml_backend_vk_device_get_buffer_type(ggml_ba
  
  static ggml_backend_buffer_type_t ggml_backend_vk_device_get_host_buffer_type(ggml_backend_dev_t dev) {
      UNUSED(dev);

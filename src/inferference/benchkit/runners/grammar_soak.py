@@ -56,7 +56,7 @@ def main() -> int:
         model_path=str(args.model), n_ctx=args.n_ctx, n_batch=128, n_gpu_layers=-1, seed=args.seed, verbose=False
     )
     after_load = gpu_snapshot()
-    require_gpu0_only(after_load)
+    require_gpu0_only(after_load, before=gpu_before)
     tokenizer = _resolve_tokenizer(args.tokenizer, allow_network=False)
     # tokenizer path resolution is a hard gate (local_files_only); the object
     # itself is not needed by the unconstrained soak path

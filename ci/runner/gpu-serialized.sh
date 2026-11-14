@@ -22,7 +22,7 @@
 # job with LLAMA_CI_GPU_BUDGET_MIB when the real footprint is known; the light
 # end of the measured range is 2475 MiB (the small ceiling probe).
 #
-# The child still reads its card from $LLAMA_CI_GPU and $CUDA_VISIBLE_DEVICES,
+# The child still reads its card from $LLAMA_CI_GPU and the device variables,
 # which gpu-lease.sh writes after the placement — so every existing assertion
 # against the role variable keeps working, and none of them may become an
 # assertion against a literal index (AGENTS.md, GPU discipline).

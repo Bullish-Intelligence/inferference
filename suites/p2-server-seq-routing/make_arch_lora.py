@@ -14,6 +14,15 @@ weight of ggml shape [ne0, ne1], `lora_a` is [ne0, rank] and `lora_b` is
 [rank, ne1]; gguf-py writes `reversed(numpy.shape)`, so the numpy arrays are the
 transpose of that.
 
+`--probe` writes a different set: `probe-a.gguf` and `probe-b.gguf`, the two
+synthetic adapters that the LoRA-probe suites read from `$MODEL_PROBE_DIR`
+(router, cached-router, lora-probe, p2-mixed-batch-lora). Each one targets
+ffn_up, ffn_gate and ffn_down on the last block and on the middle block. The two
+adapters use different fixed seeds, so they differ from each other. The suites
+need that: each adapter must change the base output, and the two must differ.
+The set is model-agnostic: any block-structured GGUF that names these weights
+takes it.
+
 Weights are random. These adapters are shape probes, not quality claims: the
 gate asks whether the graph builds and decodes, and no output is read for sense.
 
@@ -38,14 +47,21 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def _gguf():
+    """Return the gguf-py module: an installed `gguf` first, then a llama.cpp build tree."""
+    try:
+        import gguf
+    except ImportError:
+        pass
+    else:
+        return gguf
     for cand in ("src-p2fork", "src-llama.cpp", "src-p2fork-measure"):
         p = REPO / "ci/build/.llamacpp-builds" / cand / "gguf-py"
         if p.is_dir():
             sys.path.insert(0, str(p))
-            import gguf  # ty: ignore[unresolved-import]
+            import gguf
 
             return gguf
-    raise SystemExit("no gguf-py found under ci/build/.llamacpp-builds/*/gguf-py")
+    raise SystemExit("no gguf-py: install `gguf`, or build under ci/build/.llamacpp-builds/*/gguf-py")
 
 
 RANK = 16
@@ -54,6 +70,8 @@ SIGMA = 0.02
 
 FFN_TARGETS = ("ffn_up", "ffn_gate", "ffn_down")
 ATTN_TARGETS = ("attn_q", "attn_k", "attn_v", "attn_output")
+
+PROBE_NAMES = ("probe-a", "probe-b")
 
 
 def model_shape(reader) -> tuple[str, int, int, dict[str, list[int]]]:
@@ -98,18 +116,41 @@ def write_adapter(gguf, out: Path, arch: str, shapes: dict[str, list[int]], seed
     w.close()
 
 
-def main() -> int:
+def probe_targets(shapes: dict[str, list[int]], last: int, mid: int) -> dict[str, list[int]]:
+    """The FFN weights of the last block and of the middle block."""
+    return {**pick(shapes, last, FFN_TARGETS), **pick(shapes, mid, FFN_TARGETS)}
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", required=True, type=Path)
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--sigma", type=float, default=SIGMA)
     ap.add_argument("--rank", type=int, default=RANK)
     ap.add_argument("--count", type=int, default=2, help="adapters per set")
-    args = ap.parse_args()
+    ap.add_argument(
+        "--probe",
+        action="store_true",
+        help="write probe-a.gguf and probe-b.gguf (FFN on the last and middle block) and nothing else",
+    )
+    args = ap.parse_args(argv)
 
     gguf = _gguf()
     arch, last, mid, shapes = model_shape(gguf.GGUFReader(str(args.model)))
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.probe:
+        sel = probe_targets(shapes, last, mid)
+        print(f"model={args.model.name} arch={arch} last_block={last} mid_block={mid}")
+        print(f"sigma={args.sigma} rank={args.rank} alpha={ALPHA}")
+        for i, name in enumerate(PROBE_NAMES):
+            out = args.out_dir / f"{name}.gguf"
+            # One seed per adapter, fixed. crc32 of a fixed string, not hash().
+            seed = zlib.crc32(b"probe") % 10_000 + i
+            write_adapter(gguf, out, arch, sel, seed=seed, sigma=args.sigma, rank=args.rank)
+            print(f"  seed={seed}")
+            print(f"  {out}  targets={sorted(sel)}")
+        return 0
 
     sets = {
         "last-ffn": pick(shapes, last, FFN_TARGETS),

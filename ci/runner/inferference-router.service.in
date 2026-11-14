@@ -1,16 +1,18 @@
 # inferference-router.service — the llama.cpp router on the llama-infernal fork.
 #
-# TEMPLATE, AND NOT THE SHIPPED UNIT. nix/nixos-module.nix generates the unit
-# this machine runs; keep the two in step. Substitute @REPO_DIR@ to install this
-# file by hand. See ci/runner/inferference-router-launch.sh and
-# the router spike's findings.
+# TEMPLATE. nix/nixos-module.nix generates the same unit as a systemd --user
+# unit; keep the two in step. A machine can also define its own system unit
+# (for example with User= and RuntimeDirectory=inferference); it must carry the
+# same ExecReload and a TimeoutStartSec that fits the reload bound. Substitute
+# @REPO_DIR@ to install this file by hand. See ci/runner/inferference-router-launch.sh and
+# the router design notes.
 #
 # ONE INSTANCE, TOTAL — not one per role, not one per card. This is the
 # replacement for the retired inferference-server@<role>.service /
-# inferference-gpu.target pair: "THIS LIBRARY OWNS ALL LLM SERVING. There is no
-# other server." (AGENTS.md). Every model this machine serves is a child the
+# inferference-gpu.target pair. There is no other server. Every model the host
+# serves is a child the
 # router spawns from the preset INI generated at start from
-# ~/.config/inferference/placement.yaml + models/*.yaml.
+# placement.yaml + models/*.yaml in the config dir (see below).
 #
 #   systemctl --user start inferference-router
 #
@@ -33,19 +35,33 @@ StartLimitIntervalSec=60
 Type=exec
 
 # --- runtime configuration is YAML, and ONLY YAML ----------------------------
-# %h/.config/inferference/{placement.yaml,models/*.yaml}, resolved at start by
+# <config dir>/{placement.yaml,models/*.yaml}, resolved at start by
 # ci/runner/inferference-router-launch.sh via ci/runner/inferference-reconcile.py.
 # Schemas: ci/runner/placement.example.yaml, ci/runner/model.example.yaml.
 #
-# This line says WHERE the config is, never what is in it — same rule the
+# The unit sets no config dir. The launcher asks `inferference-reconcile.py
+# config-dir`, which picks: $INFERFERENCE_CONFIG_DIR, then /etc/inferference
+# when it exists, then ~/.config/inferference with a warning. To pin a dir,
+# uncomment one line. To pin the preset path, add INFERFERENCE_PRESET_INI too.
+# The launcher never writes a preset inside /etc: with no preset variable it
+# writes beside a writable config dir, else to ~/.local/state/inferference/.
+#
+# These lines say WHERE the config is, never what is in it — same rule the
 # retired per-role unit followed for its own YAML.
-Environment=INFERFERENCE_CONFIG_DIR=%h/.config/inferference
+#Environment=INFERFERENCE_CONFIG_DIR=%h/.config/inferference
 
 # The launcher renders the preset INI, resolves the artefact and the loader
 # path, and refuses with EX_CONFIG (78) on any missing fact — before any model
 # is touched. --check does the same resolution without starting the router.
 ExecStartPre=@REPO_DIR@/ci/runner/inferference-router-launch.sh --check
 ExecStart=@REPO_DIR@/ci/runner/inferference-router-launch.sh
+# `systemctl --user reload inferference-router` reconciles the running router to
+# the YAML without a restart (ci/runner/inferference-router-reload.sh). systemd
+# bounds a reload with TimeoutStartSec, below. The script keeps its one deadline
+# (600 s) plus 240 s of overhead under that value, and takes a lock so that two
+# reloads cannot run at once. It needs flock (util-linux) on the PATH of the unit.
+ExecReload=@REPO_DIR@/ci/runner/inferference-router-reload.sh
+Environment=INFERFERENCE_RELOAD_LOCK=%t/inferference-reload.lock
 
 Restart=on-failure
 # A thermal kill (the router sat at 90 C while paused) and a failed safety
@@ -54,7 +70,11 @@ RestartPreventExitStatus=75 76
 RestartSec=5
 # Startup loads every resident model (load-on-startup=true in the rendered
 # preset); a wide resident set is slow. Do not let systemd kill a healthy start.
-TimeoutStartSec=300
+# systemd also applies this value to ExecReload, and a reload can wait for
+# loads for 600 s plus up to 240 s of overhead (840 s). So the value is 900 s.
+# If you lower it, set INFERFERENCE_RELOAD_UNIT_TIMEOUT and
+# INFERFERENCE_RELOAD_LOAD_TIMEOUT to match: the script refuses a bound that does not fit.
+TimeoutStartSec=900
 # A stop must reach the llama-server processes EXACTLY ONCE. The default
 # KillMode=control-group broadcasts KillSignal to the whole cgroup, the
 # guard (MainPID) dies at once because it traps nothing, and systemd then

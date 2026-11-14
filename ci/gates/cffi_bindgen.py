@@ -78,6 +78,9 @@ PROFILE_DEFINES: dict[str, list[tuple[str, str | None]]] = {
     # This lib DOES carry the fork symbols, so run the gate WITHOUT
     # --no-fork-symbols against it; that flag is for probing a stock tree.
     "vulkan-mi25-p2fork-server": [],
+    # The library-only Vulkan P2 profile: same fork tree and same flags as the
+    # server profile above, no server target. Vulkan, so no define.
+    "vulkan-p2fork": [],
 }
 
 

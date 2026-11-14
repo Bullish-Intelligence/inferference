@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from inferference.fingerprint import ArtifactIdentity, LlamaEngineFingerprint
+from inferference.gpu_env import GPU_BACKEND_LABEL
 from inferference.grammar import GrammarCompilerCache, JsonSchemaGrammar, apply_packed_bitmask_inplace
 
 
@@ -63,7 +64,9 @@ def test_grammar_cache_key_is_canonical_and_engine_scoped() -> None:
 
     first = GrammarCompilerCache.key_for(_fingerprint(), schema_a, xgrammar_version="0.2.1")
     same = GrammarCompilerCache.key_for(_fingerprint(), schema_b, xgrammar_version="0.2.1")
-    other_engine = GrammarCompilerCache.key_for(_fingerprint(backend="cuda"), schema_a, xgrammar_version="0.2.1")
+    other_engine = GrammarCompilerCache.key_for(
+        _fingerprint(backend=GPU_BACKEND_LABEL), schema_a, xgrammar_version="0.2.1"
+    )
 
     assert first.digest == same.digest
     assert first.digest != other_engine.digest
@@ -87,7 +90,7 @@ def test_compiler_cache_reuses_only_matching_schema_and_fingerprint(monkeypatch:
         def __init__(self, tokenizer_info: object, *, cache_enabled: bool) -> None:
             calls["compiler"] += 1
 
-        def compile_json_schema(self, schema: dict[str, object], *, strict_mode: bool) -> object:
+        def compile_json_schema(self, schema: dict[str, object], *, strict_mode: bool, **options: object) -> object:
             calls["compile"] += 1
             return object()
 
@@ -100,7 +103,7 @@ def test_compiler_cache_reuses_only_matching_schema_and_fingerprint(monkeypatch:
     first = cache.get_or_compile(_fingerprint(), object(), schema, vocab_size=65)
     same = cache.get_or_compile(_fingerprint(), object(), schema, vocab_size=65)
     other_schema = cache.get_or_compile(_fingerprint(), object(), {"type": "string"}, vocab_size=65)
-    other_engine = cache.get_or_compile(_fingerprint(backend="cuda"), object(), schema, vocab_size=65)
+    other_engine = cache.get_or_compile(_fingerprint(backend=GPU_BACKEND_LABEL), object(), schema, vocab_size=65)
 
     assert first is same
     assert other_schema is not first and other_engine is not first

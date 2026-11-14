@@ -15,6 +15,7 @@ aggregates them into one outcome shape.
 
 from __future__ import annotations
 
+import json
 import statistics
 import traceback
 from pathlib import Path
@@ -179,9 +180,8 @@ def _resolve_tokenizer(tokenizer: str, *, allow_network: bool) -> str:
     soak reproducible offline (transformers can hit the network for tokenizer
     metadata even when files are cached). Also accepts a huggingface hub-cache
     REPO dir (the ``models--owner--name`` directory with ``snapshots/``): the
-    pinned revision (``refs/main``) is resolved to its snapshot, so the rig
-    ``TOKENIZER_DEFAULT`` var can point at the hub cache root the kickoff
-    verified on disk.
+    pinned revision (``refs/main``) is resolved to its snapshot, so the
+    ``TOKENIZER_DEFAULT`` var can point at the hub cache root as it sits on disk.
     """
     if Path(tokenizer).exists():
         repo_dir = Path(tokenizer)
@@ -201,6 +201,63 @@ def _resolve_tokenizer(tokenizer: str, *, allow_network: bool) -> str:
         allow_patterns=["config.json", "tokenizer_config.json", "tokenizer.json", "vocab.json", "*.jinja"],
         local_files_only=not allow_network,
     )
+
+
+_SPECIAL_TOKEN_KEYS = ("bos_token", "eos_token", "unk_token", "pad_token", "sep_token", "cls_token", "mask_token")
+
+
+def _special_token_text(value: Any) -> str | None:
+    """The text of a special token as ``tokenizer_config.json`` stores it: a string or an AddedToken dict."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and isinstance(value.get("content"), str):
+        return value["content"]
+    return None
+
+
+def load_tokenizer(tokenizer_dir: str) -> Any:
+    """Load a local tokenizer directory for grammar work, for any model whose ``tokenizer.json`` is present.
+
+    ``AutoTokenizer`` is the first choice. It fails on a directory whose
+    ``tokenizer_config.json`` is newer than the installed transformers: version 5
+    writes ``extra_special_tokens`` as a list, and version 4 reads it as a
+    mapping (``'list' object has no attribute 'keys'``). The grammar compiler
+    needs only the vocabulary and the end-of-sequence token. So on that failure,
+    load ``tokenizer.json`` with ``PreTrainedTokenizerFast`` and take the special
+    tokens from the config file, in either format.
+
+    Fail-closed: when the directory has no ``tokenizer.json``, or the config names
+    no end-of-sequence token (a grammar could then never stop), raise. The first
+    error stays attached as the cause.
+    """
+    from transformers import AutoTokenizer, PreTrainedTokenizerFast  # noqa: PLC0415
+
+    try:
+        return AutoTokenizer.from_pretrained(tokenizer_dir, local_files_only=True)
+    except Exception as first:
+        root = Path(tokenizer_dir)
+        tokenizer_file = root / "tokenizer.json"
+        if not tokenizer_file.is_file():
+            raise
+        try:
+            config = json.loads((root / "tokenizer_config.json").read_text())
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"cannot read tokenizer_config.json in {root}") from exc
+        kwargs: dict[str, Any] = {}
+        for key in _SPECIAL_TOKEN_KEYS:
+            text = _special_token_text(config.get(key))
+            if text is not None:
+                kwargs[key] = text
+        extra = config.get("extra_special_tokens") or config.get("additional_special_tokens") or []
+        extra_values = extra.values() if isinstance(extra, dict) else extra
+        additional = [t for t in (_special_token_text(v) for v in extra_values) if t is not None]
+        if additional:
+            kwargs["additional_special_tokens"] = additional
+        if "eos_token" not in kwargs:
+            raise RuntimeError(
+                f"{root}/tokenizer_config.json names no eos_token; a grammar could never stop"
+            ) from first
+        return PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_file), **kwargs)
 
 
 def run_once(

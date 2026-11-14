@@ -177,7 +177,7 @@ grep -qE 'GPU_LEASE_TIMEOUT:-[1-9][0-9]*\}' "$lease" \
   || _bad "GPU_LEASE_TIMEOUT defaults to 0 (unbounded) — that is the hang this case exists for"
 
 # --- case G: a nested lease reuses the outer one instead of deadlocking --------
-# spikes/S9/gates.sh calls gpu-serialized.sh, so any gate battery run under a
+# A gate script can call gpu-serialized.sh, so any gate battery run under a
 # lease nests one. Before the fix that blocked on a lock its own ancestor held,
 # forever. The child must see the OUTER card and the whole thing must finish.
 echo ">> case G: a lease inside a lease"

@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from inferference.gpu_env import VISIBLE_DEVICE_VARS
+
 from .env import visible_gpu_uuid
 from .envelope import RunEnvelope
 
@@ -54,9 +56,9 @@ class RunContext:
         facts = {
             "python": sys.version,
             "platform": platform.platform(),
-            "env": {k: os.environ.get(k) for k in ("LLAMA_CPP_LIB_PATH", "CUDA_VISIBLE_DEVICES", "LD_LIBRARY_PATH")},
+            "env": {k: os.environ.get(k) for k in ("LLAMA_CPP_LIB_PATH", *VISIBLE_DEVICE_VARS, "LD_LIBRARY_PATH")},
             # The device identity is the GPU UUID, not the index: the index is a
-            # function of CUDA_VISIBLE_DEVICES and reads 0 for whichever card was
+            # function of the device-visibility variable and reads 0 for whichever card was
             # exposed.
             "gpu_uuid": visible_gpu_uuid(),
         }

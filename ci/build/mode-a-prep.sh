@@ -37,8 +37,9 @@ mkdir -p "$vendor"
 # --- llama-cpp-python @ v0.3.34 ----------------------------------------------
 # A leftover materialization is a plain tree (its .git was stripped on the prior
 # run) and cannot be re-checked out — re-clone whenever .git is missing so a
-# stale tree is never silently reused (fail-closed).
-if [[ ! -d "${lcpp}/.git" ]]; then
+# stale tree is never silently reused (fail-closed). A bare .git directory with
+# no HEAD (a stray objects dir) is not a clone, so test for HEAD.
+if [[ ! -f "${lcpp}/.git/HEAD" ]]; then
   rm -rf "$lcpp"
   git clone --quiet "$LCPP_REPO" "$lcpp"
 fi

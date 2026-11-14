@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # lora-probe suite capability probe: does the pointed-at lib (1) load,
-# (2) support GPU offload (the probe is a CUDA decode), and are the rig assets
-# present (Ornith model, probe LoRAs)?
+# (2) support GPU offload (the probe decodes on a GPU), and are the rig assets
+# present (default-role model, probe LoRAs)?
 #
-# Library-mechanism gate (not a fork-symbol gate): on the integration CUDA build
+# Library-mechanism gate (not a fork-symbol gate): on the integration GPU build
 # it must PASS (the suite RUNS); on a CPU stock build it FAILS and the suite
 # SKIPs via skip_on_stock (the canary's stock build is CPU-only).
 #
@@ -32,7 +32,8 @@ def _required(name: str) -> Path:
     if not value:
         print(
             f"!! lora-probe probe: {name} is not set; source ci/runner/rig-env.sh "
-            "(roles come from the untracked ci/runner/rig-local.sh)",
+            "(declare the model role in the untracked ci/runner/rig-local.sh; "
+            "see ci/runner/rig-local.example.sh)",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -50,7 +51,7 @@ if not llama_cpp.llama_cpp.llama_supports_gpu_offload():
     print(">> [lora-probe probe] ABSENT: lib has no GPU offload (CPU build) — suite skips on stock")
     sys.exit(1)
 
-model = _required("MODEL_ORNITH")
+model = _required("MODEL_DEFAULT")
 probe_dir = _required("MODEL_PROBE_DIR")
 missing = [p for p in (model, probe_dir / "probe-a.gguf", probe_dir / "probe-b.gguf") if not p.exists()]
 if missing:

@@ -1,5 +1,7 @@
 # The router-level config: which models are resident, and on which device.
-# Install as ~/.config/inferference/placement.yaml
+# Install as <config dir>/placement.yaml. The reconcile CLI picks the config dir:
+# $INFERFERENCE_CONFIG_DIR, then /etc/inferference when it exists, then
+# ~/.config/inferference with a warning (`inferference-reconcile.py config-dir`).
 #
 # THIS FILE IS THE TRUTH. A reconcile brings the router to exactly this state and
 # overrides whatever is currently loaded — including anything done through the
@@ -27,7 +29,7 @@ resident:
   # It will NEVER split a model across cards on its own. If no single card has
   # room it REFUSES and tells you the sizes, because the tensor_split ratio is a
   # decision about your hardware and splitting also costs about 10% of decode
-  # throughput (007). Spanning cards is opt-in, below.
+  # throughput. Spanning cards is opt-in, below.
   - model: auto-placed
 
   # One model on one card, chosen by hand. An explicit placement is never

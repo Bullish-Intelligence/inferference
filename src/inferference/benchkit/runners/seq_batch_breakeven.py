@@ -18,7 +18,7 @@ custom-``n_seq_max`` context creation stays low-level). CUDA sync via
   throughput when S sequences decode one token each per ``llama_decode`` step
   (the router's "batch many sequences in flight" path) for S in {1,2,4,8,16}.
 
-GPU-only: CUDA_VISIBLE_DEVICES=0, n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
+GPU-only: one card pinned (LLAMA_CI_GPU), n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
 """
 
 from __future__ import annotations
@@ -142,7 +142,7 @@ def main() -> int:
 
     h = Harness(str(args.model), args.n_ctx, args.n_batch, args.seed)
     after_load = gpu_snapshot()
-    require_gpu0_only(after_load)
+    require_gpu0_only(after_load, before=gpu_before)
 
     toks = h.tokenize(b"Router batched throughput and break-even workload. " * 80)
 

@@ -64,6 +64,13 @@ A stock binding against a different `llama.cpp` is silent memory corruption,
 not an error. There is no `llama-cpp-python` wheel on PyPI for 0.3.34, so the
 first install compiles `llama.cpp` and takes several minutes.
 
+## Upgrade from 0.3.0
+
+Version 0.4.0 has breaking changes. JSON-schema grammars now produce compact
+JSON. Some adapters are now refused. The NixOS module needs `configDir`. Existing
+system units need `ExecReload`. Read "Breaking changes and migration" in
+[CHANGELOG.md](CHANGELOG.md) before you upgrade.
+
 ## Development environment
 
 `devenv.nix` pins the toolchain for this repository. `uv sync` builds the
@@ -158,6 +165,46 @@ ci/runner/                 rig environment, GPU lease, router launch, suites exe
 tasks/codeeval/            the coding-evaluation corpus (data, not code)
 tests/                     the library's test suite
 ```
+
+## Capability suites
+
+A suite under `suites/` answers one question: does this build carry this
+capability? `ci/runner/run-suite.sh --suite <name> --out <build-out-dir>` runs
+it. The verdict is PASS, SKIP or FAIL.
+
+Each `suite.json` names the inventory that it needs. It never names a model file.
+
+- `env.MODEL_ROLE` is the model role. The suite reads `$MODEL_<ROLE>`.
+- `env.MODEL_VARS` lists more inventory variables, for example `MODEL_PROBE_DIR`
+  or `TOKENIZER_DEFAULT`. Each one must be set and name a readable path.
+- `env.GPU_TESTS` lists the tests that need a GPU. The default is every test.
+
+A variable that is unset or unreadable is an inventory gap. The suite FAILS and
+names the variable. A suite on a GPU run where every GPU test skipped gives SKIP,
+never PASS.
+
+| Role | Variable | Suites |
+|---|---|---|
+| `default` | `MODEL_DEFAULT`, `MODEL_PROBE_DIR`, `TOKENIZER_DEFAULT` | router, cached-router, lora-probe, prefix-cache, p2-mixed-batch-lora |
+| `nanbeige` | `MODEL_NANBEIGE`, `MODEL_NANBEIGE_LORA_PROBE` | nanbeige-arch, nanbeige-hats, p2-server-seq-routing |
+| `llama` | `MODEL_LLAMA` | the routing smoke test in p2-server-seq-routing (optional) |
+
+Role names are lowercase letters and digits. The `default` role is the role that
+`INFERFERENCE_DEFAULT_ROLE` names in `ci/runner/rig-local.sh`. The `nanbeige`
+suites test that architecture, so no other model fills the role.
+
+The LoRA probe suites need two synthetic adapters, `probe-a.gguf` and
+`probe-b.gguf`, built for the architecture of the role model. Write them with
+the `--probe` option of `make_arch_lora.py`:
+
+```bash
+ci/library/.venv/bin/python suites/p2-server-seq-routing/make_arch_lora.py \
+    --probe --model "$MODEL_DEFAULT" --out-dir "$MODEL_PROBE_DIR"
+```
+
+Without `--probe`, the script writes the three adapter sets that the routing
+smoke test reads (`last-ffn`, `mid-ffn`, `last-attn`). See
+`ci/runner/rig-local.example.sh` for the full inventory.
 
 ## The two rules worth knowing up front
 

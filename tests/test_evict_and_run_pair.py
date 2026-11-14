@@ -1,6 +1,6 @@
 """Fake-router tests for ``ci/runner/evict-and-run-pair.sh``.
 
-The script chains the owner steps of ``evict-and-run-eval.sh`` for two cards:
+The script chains the steps of ``evict-and-run-eval.sh`` for two cards:
 evict each card from the router, wait for both to drain below the runner's
 residency floor, then exec the ``run-pair`` command. These tests replace every
 child process with a stub python (the same PATH-fake pattern as

@@ -6,19 +6,44 @@
     inferference-reconcile.py render          # print the preset INI only
     inferference-reconcile.py status          # what is resident now, and its health
     inferference-reconcile.py evict <device>  # free a card; config untouched
+    inferference-reconcile.py config-dir      # print the config dir this tool reads
+    inferference-reconcile.py preset-ini      # print the preset file this tool uses
 
 CONFIG (one model per file; the platform names no model itself):
 
     $INFERFERENCE_CONFIG_DIR/models/<name>.yaml     what a model IS
     $INFERFERENCE_CONFIG_DIR/placement.yaml         which models are resident, where
 
-Default config dir is ~/.config/inferference.
+The config dir is chosen in this order, and the tool prints which one it used:
+
+    1. $INFERFERENCE_CONFIG_DIR, when set.
+    2. /etc/inferference, when it exists: the dir that the router service reads.
+       The preset file then defaults to /run/inferference/models-preset.ini,
+       when that dir exists, as the router unit sets it.
+    3. ~/.config/inferference, with a warning: a home copy can be stale.
+
+Other launchers (evict-and-run-*.sh) ask `config-dir` instead of repeating this
+order. This CLI is the one source of truth for the default. The order itself
+lives in inferference.config_paths, so `inferference.config_dir()` agrees.
+
+The preset file path has one source too. `preset-ini` prints it, and the router
+launcher asks for it. The order is: $INFERFERENCE_PRESET_INI; the system router's
+/run/inferference/models-preset.ini (system config dir, when /run/inferference
+exists); beside a writable config dir that is outside /etc; else
+${XDG_STATE_HOME:-~/.local/state}/inferference/models-preset.ini.
+
+PRESET FILE. The router reads one preset file ($INFERFERENCE_PRESET_INI). When
+the caller cannot write it (the router runs as its own user), `apply` compares
+the declared preset with the router's file first. A difference REFUSES `apply`:
+the reload would load the router's preset, not the one that was budgeted. The
+declared preset is then rendered to a caller-owned file under $XDG_STATE_HOME.
+`plan` reports the same comparison.
 
 WHY THIS EXISTS. llama.cpp will not refuse a placement that does not fit: it
 returns success, reports every layer on the GPU, and silently spills into host
 memory over PCIe at about 1/14th the speed. So admission control is ours. A
 placement that would exceed a card's budget is REFUSED, with a listing of what
-is already resident there so the owner decides what comes out — this tool never
+is already resident there so the operator decides what comes out — this tool never
 evicts to make room.
 
 RECONCILE IS THREE STEPS AND NEEDS NO RESTART:
@@ -26,6 +51,9 @@ regenerate the INI, GET /models?reload=1, then ensure every declared model is
 loaded with its current preset. The router may start a load-on-startup preset
 during reload; apply checks the reported preset and waits for that load instead
 of issuing a duplicate request. Missing or stale children are loaded explicitly.
+`systemctl reload inferference-router` runs `apply` as the unit user through
+ci/runner/inferference-router-reload.sh. `apply` writes the preset file by temp
+file + rename, after the budget check, so a refused reload leaves it unchanged.
 The router's own /models/load and /models/unload stay enabled; anything they did
 is discarded here, by design.
 """
@@ -37,6 +65,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -45,11 +74,13 @@ from typing import Any, NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from inferference import config_paths  # noqa: E402
 from inferference.placement import (  # noqa: E402
     BudgetError,
     ModelSpec,
     Placement,
     PlacementError,
+    parse_preset_sections,
     plan_reconcile,
     render_preset_ini,
 )
@@ -67,6 +98,38 @@ from inferference.reconcile import (  # noqa: E402
 EX_CONFIG = 78
 # Seconds to let amdgpu reclaim freed VRAM before the placement check reads it.
 SETTLE_S = float(os.environ.get("INFERFERENCE_SETTLE_S", "20"))
+# After a failed apply, the tool unloads the models that it changed. The unloads
+# share CLEANUP_S seconds, and one unload takes at most UNLOAD_S. The clean stop
+# of one model takes about 14 s at most.
+CLEANUP_S = 90.0
+UNLOAD_S = 45.0
+# The time that `apply` can use after its deadline passes, in the worst case:
+# the settle wait, the cleanup, and four router reads of 30 s each. The reload
+# script keeps load timeout + this value under the unit timeout.
+APPLY_OVERHEAD_S = 240.0
+
+
+class Deadline:
+    """One time limit for the whole of `apply`: every wait and every router call.
+
+    `--timeout` sets it. Two waits in a row must not each take the full limit,
+    so both read the time that is left. After the deadline passes, a router call
+    still gets one second, so a final unload can run.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self._end = time.monotonic() + seconds
+
+    def remaining(self) -> float:
+        return max(0.0, self._end - time.monotonic())
+
+    def expired(self) -> bool:
+        return self.remaining() <= 0.0
+
+    def cap(self, seconds: float) -> float:
+        """Return ``seconds``, cut to the time that is left (at least one second)."""
+        return max(1.0, min(seconds, self.remaining()))
 
 
 def _default_router() -> str:
@@ -93,12 +156,55 @@ def die(msg: str) -> NoReturn:
     raise SystemExit(EX_CONFIG)
 
 
+# The system-service convention: the config dir of the router service. The
+# library owns the order (inferference.config_paths.resolve_config_dir), so that
+# the CLI and `inferference.config_dir()` cannot disagree. These names stay here
+# so that a test can point the CLI at a fake system dir.
+SYSTEM_CONFIG_DIR = config_paths.SYSTEM_CONFIG_DIR
+HOME_CONFIG_DIR = config_paths.HOME_CONFIG_DIR
+# Where the system router unit keeps its preset file (INFERFERENCE_PRESET_INI).
+SYSTEM_PRESET_INI = Path("/run/inferference/models-preset.ini")
+
+
+def resolve_config_dir() -> tuple[Path, str]:
+    """Return the config dir and the reason it was chosen.
+
+    An explicit ``$INFERFERENCE_CONFIG_DIR`` always wins. Without it, the system
+    dir wins when it exists, so the CLI budgets from the config that the router
+    serves. The home dir is the last resort, and the reason says it is a
+    fallback so that the caller can warn.
+    """
+    return config_paths.resolve_config_dir(SYSTEM_CONFIG_DIR, HOME_CONFIG_DIR)
+
+
 def config_dir() -> Path:
-    return Path(os.environ.get("INFERFERENCE_CONFIG_DIR", "~/.config/inferference")).expanduser()
+    return resolve_config_dir()[0]
+
+
+_ANNOUNCED: set[tuple[Path, str]] = set()
+
+
+def announce_config_dir() -> None:
+    """Say on stderr which config dir this run reads. Never silent."""
+    path, how = resolve_config_dir()
+    if (path, how) in _ANNOUNCED:
+        return
+    _ANNOUNCED.add((path, how))
+    if how == "home-fallback":
+        print(
+            f"!! [reconcile] WARNING: reading the home config {path}: $INFERFERENCE_CONFIG_DIR is "
+            f"unset and {SYSTEM_CONFIG_DIR} does not exist. A home copy can be stale. "
+            f"Set $INFERFERENCE_CONFIG_DIR to the config that the router serves.",
+            file=sys.stderr,
+        )
+    else:
+        source = "$INFERFERENCE_CONFIG_DIR" if how == "env" else "system default"
+        print(f">> config dir: {path} ({source})", file=sys.stderr)
 
 
 def load_config() -> tuple[Placement, dict[str, ModelSpec]]:
     """Read the config dir, turning any refusal into the CLI's exit code."""
+    announce_config_dir()
     try:
         return read_config_dir(config_dir())
     except ConfigError as exc:
@@ -165,8 +271,40 @@ def device_snapshot(placement: Placement) -> dict[str, tuple[float, float]]:
     return out
 
 
+def _under_etc(path: Path) -> bool:
+    """True when ``path`` resolves into /etc. The tool never writes a preset there."""
+    real = Path(os.path.realpath(path))
+    return real == Path("/etc") or Path("/etc") in real.parents
+
+
+def resolve_ini_path() -> tuple[Path, str]:
+    """Return the preset file that the router reads, and the reason it was chosen.
+
+    This is the one source of truth for the default. The router launcher asks it
+    through ``preset-ini``, so the launcher and `apply` cannot disagree. The order:
+
+    1. ``$INFERFERENCE_PRESET_INI`` (reason ``env``).
+    2. With the system config dir, the system router's runtime path, when its
+       dir exists (reason ``system-runtime``): the system dir is read-only, and
+       the router unit points at the runtime path.
+    3. Beside the config, when the config dir is outside /etc and this process
+       can write it (reason ``beside-config``).
+    4. ``$XDG_STATE_HOME/inferference/models-preset.ini`` (reason ``state``).
+    """
+    env = os.environ.get("INFERFERENCE_PRESET_INI")
+    if env:
+        return Path(env), "env"
+    path, how = resolve_config_dir()
+    if how == "system" and SYSTEM_PRESET_INI.parent.is_dir():
+        return SYSTEM_PRESET_INI, "system-runtime"
+    if not _under_etc(path) and path.is_dir() and os.access(path, os.W_OK | os.X_OK):
+        return path / "models-preset.ini", "beside-config"
+    return local_ini_path(), "state"
+
+
 def ini_path() -> Path:
-    return Path(os.environ.get("INFERFERENCE_PRESET_INI", str(config_dir() / "models-preset.ini")))
+    """The preset file that the router reads. See :func:`resolve_ini_path`."""
+    return resolve_ini_path()[0]
 
 
 def _current_ini() -> str | None:
@@ -187,6 +325,85 @@ def _current_ini() -> str | None:
         return None
 
 
+def _can_write(path: Path) -> bool:
+    """True when `_write_atomic` can replace ``path``, or create it where it belongs.
+
+    `_write_atomic` writes a temp file beside ``path`` and renames it over
+    ``path``. So the parent dir must be writable even when the file itself is.
+    A writable file in a read-only dir is NOT writable here.
+    """
+    parent = path.parent
+    while not parent.exists() and parent != parent.parent:
+        parent = parent.parent
+    if not os.access(parent, os.W_OK | os.X_OK):
+        return False
+    if path.exists():
+        return os.access(path, os.W_OK)
+    return True
+
+
+def local_ini_path() -> Path:
+    """A caller-owned path for the rendered preset, when the router's is read-only."""
+    state = Path(os.environ.get("XDG_STATE_HOME") or "~/.local/state").expanduser()
+    return state / "inferference" / "models-preset.ini"
+
+
+class PresetCheck:
+    """How the router's preset file relates to the preset that would be applied."""
+
+    def __init__(self, path: Path, writable: bool, matches: bool | None, detail: str = "") -> None:
+        self.path = path
+        self.writable = writable
+        # None: the router's file could not be read.
+        self.matches = matches
+        self.detail = detail
+
+    @property
+    def blocks_apply(self) -> bool:
+        """The caller cannot write the router's file and it is not the wanted one."""
+        return not self.writable and self.matches is not True
+
+    def describe(self) -> str:
+        if self.writable:
+            return f"router preset {self.path}: writable here; apply rewrites it"
+        if self.matches is None:
+            return f"router preset {self.path}: read-only here and UNREADABLE ({self.detail})"
+        if self.matches:
+            return f"router preset {self.path}: read-only here; it MATCHES the declared preset"
+        return f"router preset {self.path}: read-only here and DIFFERS from the declared preset"
+
+
+def check_router_preset(wanted_ini: str) -> PresetCheck:
+    path = ini_path()
+    writable = _can_write(path)
+    try:
+        live = path.read_text()
+    except OSError as exc:
+        return PresetCheck(path, writable, None, str(exc))
+    return PresetCheck(path, writable, parse_preset_sections(live) == parse_preset_sections(wanted_ini))
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` so that a reader sees the old file or the new one, never half.
+
+    The temp file sits in the same dir, so the rename stays on one filesystem. The
+    mode is 0644: the router and the other users of the preset file read it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp.chmod(0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 # -------------------------------------------------------------------- commands --
 def cmd_render(args: argparse.Namespace) -> int:
     placement, specs = load_config()
@@ -197,8 +414,7 @@ def cmd_render(args: argparse.Namespace) -> int:
         # `devenv shell -- ... render > file` silently prepends that banner and
         # the router then refuses the file with "failed to parse server config".
         out = Path(args.out).expanduser()
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text)
+        _write_atomic(out, text)
         print(f">> wrote {out}")
     else:
         print(text, end="")
@@ -242,6 +458,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
     print(f"keep:    {plan.unchanged or '-'}")
     for child in crashed_children(models):
         print(f"!! CRASHED: {child.name} (exit_code={child.exit_code})", file=sys.stderr)
+    check = check_router_preset(render_preset_ini(placement, specs))
+    print(f"\n{check.describe()}")
+    if check.blocks_apply:
+        print("!! apply would REFUSE: the router would reload a preset other than the one budgeted.", file=sys.stderr)
     return 0
 
 
@@ -273,36 +493,83 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
     if plan.needs_router_restart:
         # Refuse rather than restart: a restart drops every resident model, which
-        # is the owner's call to make, not this tool's.
+        # is the operator's call to make, not this tool's.
         die(f"{plan.restart_reason}\n   Restart the router with --models-max {plan.models_max}, then re-run apply.")
 
-    before = device_snapshot(placement)
     wanted_ini = render_preset_ini(placement, specs)
+    deadline = Deadline(args.timeout)
+
+    # Decide the preset route BEFORE any unload. When the router's file is
+    # read-only here, ?reload=1 loads whatever that file says. If it is not the
+    # preset that was budgeted, stop now. "Read-only" includes a writable file in
+    # a dir that this process cannot write: the temp file needs the dir.
+    check = check_router_preset(wanted_ini)
+    if check.blocks_apply:
+        local = local_ini_path()
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(wanted_ini)
+        die(
+            f"{check.describe()}.\n"
+            f"   The router would reload that file, not the preset that was budgeted. Nothing was changed.\n"
+            f"   The declared preset is rendered at {local}. Install it as the router user, then re-run apply."
+        )
+
+    # A reload with nothing to change touches nothing: no preset write, no
+    # ?reload=1, no verify, no unload. The router keeps every model that it has.
+    if not plan.to_unload and not plan.to_load and check.matches is True:
+        print(">> nothing to change: every declared model is resident with the declared preset.")
+        print(">> verify and unload skipped; no model was touched.")
+        return 0
+
+    before = device_snapshot(placement)
 
     # Undeclared models come out FIRST, while the router still knows them.
     # Regenerating the INI removes them from it, and ?reload=1 then drops them
     # from the registry — after which unloading them by name is a 400.
     for name in plan.to_unload:
-        _req("POST", f"{args.router}/models/unload", {"model": name}, tolerate_http=True)
+        _req(
+            "POST", f"{args.router}/models/unload", {"model": name}, timeout=deadline.cap(UNLOAD_S), tolerate_http=True
+        )
         print(f">> unloaded {name}  (not declared in YAML)")
 
-    path = ini_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(wanted_ini)
-    print(f">> wrote {path}")
+    if check.writable:
+        path = check.path
+        _write_atomic(path, wanted_ini)
+        print(f">> wrote {path}")
+    else:
+        print(f">> router preset {check.path} is read-only here and matches the declared preset; not rewritten")
 
-    def unload_unverified() -> None:
-        for resident in placement.resident:
-            name = resident.model
+    # The models that this run changes: the ones that are missing or whose preset
+    # differs. A failed apply unloads these and no other. A model that the run did
+    # not change was proven before, and it stays resident.
+    changed_here = list(plan.to_load)
+
+    def unload_changed(why: str) -> None:
+        if not changed_here:
+            print(f"!! {why}. This run changed no model, so none is unloaded.", file=sys.stderr)
+            return
+        print(f"!! {why}. Unloading the models that this run changed: {changed_here}.", file=sys.stderr)
+        cleanup = Deadline(CLEANUP_S)
+        for name in changed_here:
             try:
-                _req("POST", f"{args.router}/models/unload", {"model": name}, timeout=120)
-                print(f">> unloaded {name} after placement verification failed", file=sys.stderr)
+                done = _req(
+                    "POST",
+                    f"{args.router}/models/unload",
+                    {"model": name},
+                    timeout=min(UNLOAD_S, cleanup.cap(UNLOAD_S)),
+                    tolerate_http=True,
+                )
             except (Exception, SystemExit) as exc:
-                print(f"!! could not unload unverified model {name}: {exc}", file=sys.stderr)
+                print(f"!! could not unload {name}: {exc}", file=sys.stderr)
+                continue
+            if done is None:
+                print(f">> {name} was not loaded; nothing to unload", file=sys.stderr)
+            else:
+                print(f">> unloaded {name} (this run changed it, and the reload then failed)", file=sys.stderr)
 
     def load_and_verify() -> int:
         # Reload may start a load-on-startup preset.
-        _req("GET", f"{args.router}/models?reload=1")
+        _req("GET", f"{args.router}/models?reload=1", timeout=deadline.cap(30.0))
         print(">> reloaded presets")
         current = router_models(args.router)
         loading = [
@@ -311,7 +578,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
             if any(m.get("id") == name and (m.get("status") or {}).get("value") == "loading" for m in current)
         ]
         if loading:
-            _wait_loaded(args.router, loading, timeout=args.timeout)
+            _wait_loaded(args.router, loading, deadline=deadline)
             current = router_models(args.router)
 
         already_current = models_with_matching_presets(current, plan.to_load, wanted_ini)
@@ -322,14 +589,14 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 print(f">> {name} already loaded with the declared preset")
                 continue
             if name in still_up:
-                _req("POST", f"{args.router}/models/unload", {"model": name}, timeout=120)
+                _req("POST", f"{args.router}/models/unload", {"model": name}, timeout=deadline.cap(UNLOAD_S))
                 print(f">> unloaded {name}  (running preset differs from YAML)")
-            _req("POST", f"{args.router}/models/load", {"model": name}, timeout=600)
+            _req("POST", f"{args.router}/models/load", {"model": name}, timeout=deadline.cap(600.0))
             print(f">> loading {name} ...")
             explicit_loads.append(name)
 
         if explicit_loads:
-            _wait_loaded(args.router, explicit_loads, timeout=args.timeout)
+            _wait_loaded(args.router, explicit_loads, deadline=deadline)
         observed = router_models(args.router)
         result = _verify(placement, before, plan, observed)
         if result:
@@ -350,16 +617,20 @@ def cmd_apply(args: argparse.Namespace) -> int:
     try:
         result = load_and_verify()
     except BaseException:
-        unload_unverified()
+        unload_changed("the reload failed before the placement was proven")
         raise
     if result:
-        unload_unverified()
+        unload_changed("the placement was not proven")
     return result
 
 
-def _wait_loaded(router: str, names: list[str], timeout: float) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+def _wait_loaded(router: str, names: list[str], deadline: Deadline) -> None:
+    """Wait until every name in ``names`` has left the `loading` state.
+
+    The wait ends at the shared ``deadline`` of the whole apply. A second wait in
+    the same apply gets only the time that the first one left.
+    """
+    while not deadline.expired():
         models = {m["id"]: m for m in router_models(router)}
         pending = [n for n in names if models.get(n, {}).get("status", {}).get("value") == "loading"]
         if not pending:
@@ -372,8 +643,8 @@ def _wait_loaded(router: str, names: list[str], timeout: float) -> None:
             if bad:
                 die(f"model(s) failed to load: {', '.join(bad)}")
             return
-        time.sleep(2)
-    die(f"timed out after {timeout}s waiting for {names} to load")
+        time.sleep(min(2.0, max(0.0, deadline.remaining())))
+    die(f"the apply deadline of {deadline.seconds:g}s passed while waiting for {names} to load")
 
 
 def _pci_address(card: int) -> str:
@@ -444,7 +715,7 @@ def _verify(
     """Prove the placement landed in VRAM, not in host memory.
 
     Three independent checks per device, because each one alone can pass on a
-    spilled model (007 report 01):
+    spilled model:
 
     * GTT did NOT rise. This is the one that catches the silent spill: a model in
       host memory still answers, still reports every layer on the GPU, and still
@@ -560,11 +831,46 @@ def cmd_evict(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_config_dir(args: argparse.Namespace) -> int:
+    """Print the config dir that this tool reads, and nothing else, on stdout.
+
+    A launcher calls this to follow the CLI default. The reason goes to stderr,
+    as for every other command. This command reads no file and asks no router.
+    """
+    announce_config_dir()
+    print(config_dir())
+    return 0
+
+
+def cmd_preset_ini(args: argparse.Namespace) -> int:
+    """Print the preset file path that this tool uses, and nothing else, on stdout.
+
+    The router launcher calls this to follow the CLI default. A note goes to
+    stderr when the path is the caller's state dir. This command reads no file
+    and asks no router.
+    """
+    announce_config_dir()
+    path, how = resolve_ini_path()
+    if how == "state":
+        print(
+            f">> the config dir {config_dir()} is not writable here or is inside /etc, "
+            f"so the preset goes to the caller's state dir (set $INFERFERENCE_PRESET_INI to choose)",
+            file=sys.stderr,
+        )
+    print(path)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     default_router = _default_router()
     ap.add_argument("--router", default=default_router, help=f"router base URL (default {default_router})")
-    ap.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for loads")
+    ap.add_argument(
+        "--timeout",
+        type=float,
+        default=900.0,
+        help="one deadline in seconds for all load waits and router calls of `apply`, not one per wait",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     p_render = sub.add_parser("render", help="print (or write) the generated preset INI")
     p_render.add_argument(
@@ -583,6 +889,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="what is resident now, and its health")
     p_evict = sub.add_parser("evict", help="unload everything on a device")
     p_evict.add_argument("device", help="device id, e.g. Vulkan1")
+    sub.add_parser("config-dir", help="print the config dir that this tool reads")
+    sub.add_parser("preset-ini", help="print the preset file path that this tool uses")
 
     args = ap.parse_args(argv)
     return {
@@ -591,6 +899,8 @@ def main(argv: list[str] | None = None) -> int:
         "apply": cmd_apply,
         "status": cmd_status,
         "evict": cmd_evict,
+        "config-dir": cmd_config_dir,
+        "preset-ini": cmd_preset_ini,
     }[args.cmd](args)
 
 

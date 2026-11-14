@@ -11,6 +11,10 @@ server and never writes an actuator; it only reads sysfs, the config
 directory, the build manifest, the repo's own `.git`, and a `pp_table` blob,
 and compares what it reads against the spec.
 
+**CPU EPP.** A spec with `fixed.host.cpu_epp` adds a `cpu_epp` check after
+`power_profile`: every CPU must read that energy performance preference. The
+host owns the setting. The check only reads it.
+
 **Dual-card specs.** A spec with `fixed.placement` adds three checks after
 `vram_fit`: `placement_pair` (each listed card has exactly one resident model,
 and both models are the same GGUF with the same footprint), `peer_cap` (the peer
@@ -55,11 +59,18 @@ from ..pptable import decode as pptable_decode
 from ..pptable import diff as pptable_diff
 from ..reconcile import read_config_dir
 from ..telemetry import FanDuctReader, TelemetryError, read_watchdog_status
-from .control import ControlError, normalize_power_profile, read_power_state, verify_power_profile
+from .control import (
+    ControlError,
+    normalize_power_profile,
+    read_cpu_state,
+    read_power_state,
+    verify_cpu_epp,
+    verify_power_profile,
+)
 from .residency import IDLE_VRAM_MAX_MIB, ResidencyError, memory_snapshot, sysfs_pci_address
 from .safety import SafetyError, effective_machine_limit_c
 from .spec import ExperimentSpec
-from .workload import WorkloadError, parse_workload
+from .workload import WorkloadError, agent_turns_context_tokens, corpus_prompts, parse_workload
 
 _CHECK_ORDER: tuple[str, ...] = (
     "workloads",
@@ -107,6 +118,7 @@ class HostPaths:
     current_system: Path = Path("/run/current-system")
     fan_status_file: Path = Path("/run/arctic-fan/status")
     repo_root: Path = Path(".")
+    cpu_root: Path = Path("/sys/devices/system/cpu")
 
 
 _DEFAULT_HOST_PATHS = HostPaths()
@@ -347,6 +359,21 @@ def preflight(
             plan = parse_workload(name)
         except WorkloadError as exc:
             _refuse("workloads", f"workload {name!r} does not parse: {exc}")
+        if plan.corpus_set is not None:
+            try:
+                corpus_prompts(plan.corpus_set)
+            except WorkloadError as exc:
+                _refuse("workloads", f"workload {name!r} cannot load its corpus set: {exc}")
+        if plan.kind == "agent_turns":
+            assert plan.turns is not None
+            needed = agent_turns_context_tokens(plan.turns)
+            slot = spec.fixed.context.tokens_per_slot
+            if needed > slot:
+                _refuse(
+                    "workloads",
+                    f"workload {name!r} needs up to {needed} tokens in one slot, "
+                    f"but fixed.context.tokens_per_slot is {slot}",
+                )
         parsed_workloads.append({"name": plan.name, "kind": plan.kind})
     _record("workloads", parsed_workloads)
 
@@ -634,6 +661,18 @@ def preflight(
     }
     identity["power_profile"] = power_profile_info
     _record("power_profile", power_profile_info)
+
+    # 11b. cpu_epp, only when the spec declares it -----------------------
+    declared_cpu_epp = spec.fixed.host.cpu_epp
+    if declared_cpu_epp is not None:
+        try:
+            cpu_state = read_cpu_state(paths.cpu_root)
+            verify_cpu_epp(declared_cpu_epp, cpu_state)
+        except ControlError as exc:
+            _refuse("cpu_epp", str(exc))
+        cpu_epp_info = {"declared": declared_cpu_epp, "state": cpu_state}
+        identity["cpu_epp"] = cpu_epp_info
+        _record("cpu_epp", cpu_epp_info)
 
     # 12. fan_watchdog -----------------------------------------------------
     # The watchdog rewrites this file with a shell redirect, so a read can see

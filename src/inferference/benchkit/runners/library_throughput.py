@@ -11,7 +11,7 @@ the token-exact cross-check. Phase 2: fixed S, grow the pool K to find where
 the masked K x LoRA overhead erodes the fork's structural win (each leg guarded
 for VRAM, recorded as skipped rather than crashing the run).
 
-Requires a P2 fork lib; GPU-only (CUDA_VISIBLE_DEVICES=0, n_gpu_layers=-1).
+Requires a P2 fork lib; GPU-only (one card pinned, n_gpu_layers=-1).
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from typing import Any
 
 import llama_cpp
 
+from inferference.gpu_env import lib_backend_label
 from inferference.models import EngineConfig
 from inferference.router import AdapterSpec, MultiLoRARouter, RouterConfig, RouteRequest
 
@@ -64,7 +65,7 @@ def _make_router(args: argparse.Namespace, adapters: tuple[AdapterSpec, ...], ba
                 n_gpu_layers=-1,
                 n_batch=128,
                 seed=args.seed,
-                backend="cuda",
+                backend=lib_backend_label(),
             ),
             adapters=adapters,
             n_seq_max=args.n_seq_max,
@@ -140,7 +141,7 @@ def main() -> int:
     fork = _make_router(args, pool2, "seq_routed")
     try:
         after_load = gpu_snapshot()
-        require_gpu0_only(after_load)
+        require_gpu0_only(after_load, before=gpu_before)
         for s in sizes:
             if s > args.n_seq_max:
                 continue

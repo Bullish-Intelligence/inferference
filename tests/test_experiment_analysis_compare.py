@@ -35,7 +35,7 @@ def _declaration(fixed: dict[str, Any], *, band_c: tuple[int, int] = (20, 90)) -
     return {
         "schema_version": 1,
         "written_utc": "2026-10-07T00:00:00+00:00",
-        "experiment": "032-thermal",
+        "experiment": "thermal-a",
         "spec_sha256": "deadbeef",
         "fixed": fixed,
         "factor": {"name": "lanes", "value": "4"},
@@ -52,7 +52,7 @@ def _group(condition: str, declaration: dict[str, Any], n: int = 3) -> list[RunR
             layout="030-v1",
             run={
                 "schema_version": 1,
-                "experiment": "032-thermal",
+                "experiment": "thermal-a",
                 "condition": condition,
                 "factor_name": "lanes",
                 "factor_value": "4",
@@ -139,7 +139,7 @@ def test_mixed_condition_ids_in_one_group_refuse() -> None:
     a = _group("cond-a", _declaration(_fixed()))
     odd_run = {
         "schema_version": 1,
-        "experiment": "032-thermal",
+        "experiment": "thermal-a",
         "condition": "cond-a-other",
         "factor_name": "lanes",
         "factor_value": "4",
@@ -162,7 +162,7 @@ def test_mixed_condition_ids_in_one_group_refuse() -> None:
         compare(a, b, endpoint="decode_tok_s", values_a=[1.0, 2.0, 3.0], values_b=[4.0, 5.0, 6.0])
 
 
-def test_the_project_032_two_axis_arm_comparison_call_shape_is_supported() -> None:
+def test_the_two_axis_arm_comparison_call_shape_is_supported() -> None:
     # The arms are separate spec files: arm A carries no pp_table
     # and the stock safety bounds; arm B carries a named pp_table variant and
     # its own bounds. Comparing them needs exactly these three paths allowed.

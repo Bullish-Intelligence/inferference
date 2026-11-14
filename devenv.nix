@@ -170,13 +170,14 @@
       };
 
       "test:full" = {
-        # About 60 s warm. The `runtime` marker names the 3 tests that import the native stack.
+        # About 4 min warm: five thermal guard tests take about 30 s each. The default limit of
+        # 300 s was too tight. The `runtime` marker names the 3 tests that import the native stack.
         exec = ''
           out="''${TESTEE_RUN_DIR:-.devenv/state}"
           mkdir -p "$out"
           uv run --no-sync python -m pytest -m "not runtime" --junitxml="$out/test:full.junit.xml"
         '';
-        input.testee.ignores = unread;
+        input.testee = { timeout_s = 600; ignores = unread; };
       };
 
       # The whole suite and the type check in the native library venv. It builds llama-cpp-python

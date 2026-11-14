@@ -7,7 +7,12 @@
     "probe": "probes/capability.sh",
     "required": true
   },
-  "env": { "GPU": false, "MODEL": "Nanbeige4.2-3B-UD-Q4_K_XL.gguf", "LIB": true },
+  "env": {
+    "GPU": false,
+    "MODEL_ROLE": "nanbeige",
+    "MODEL_NEEDS": "a GGUF whose general.architecture is nanbeige",
+    "LIB": true
+  },
   "tests": ["tests/test_nanbeige_arch.py"],
   "skip_on_stock": false
 }

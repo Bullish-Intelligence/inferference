@@ -4,7 +4,7 @@
 # Policy (curate, or the disk fills quietly mid-benchmark):
 #
 #   * out-<profile>-<sha>: keep the NEWEST out dir per profile
-#     (p2fork / cpu-light / cuda-3060), delete the rest. The out dirs are the
+#     (p2fork / vulkan-p2fork / cpu-light / cuda-3060), delete the rest. The out dirs are the
 #     Mode B lib-swap targets + build-manifest.json evidence; the newest is
 #     what the next gate run will use. (If you are mid-experiment pointing
 #     LLAMA_CPP_LIB_PATH at an older out dir, don't run this.)
@@ -59,6 +59,9 @@ keep_newest_per_profile() { # $1 = prefix (out- / build-)
   while IFS= read -r dir; do
     dir="${dir%/}"
     profile="${dir#${prefix}}"
+    # A residency build ends in -residency-<patch12>. Drop it first, or every
+    # patch hash would count as its own profile and none would ever be pruned.
+    profile="$(sed -E 's/-residency-[0-9a-f]{12}$//' <<<"$profile")"
     profile="${profile%-*}"
     [[ -n "$profile" && "$dir" == "${prefix}"* ]] || continue
     if [[ -z "${kept[$profile]:-}" ]]; then

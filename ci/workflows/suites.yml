@@ -11,10 +11,19 @@
 # (the drift detector — a suite whose probe fails on stock means upstream moved).
 #
 #   * GPU cells (p2-mixed-batch-lora × integration) run on
-#     [self-hosted, cuda, rtx3060], flock-serialized, GPU 0 pinned.
+#     [self-hosted, gpu, vulkan], lease-serialized (ci/runner/gpu-lease.sh), one card pinned.
+#   * The GPU library cells build the vulkan-p2fork profile (the P2 fork library
+#     for Vulkan). The p2-server-seq-routing cell builds the Vulkan server
+#     profile vulkan-mi25-p2fork-server, because the suite needs bin/llama-server.
+#   * p2-server-seq-routing does not apply to a host with no nanbeige-architecture
+#     model. Its suite.json names the role "nanbeige". On such a host
+#     MODEL_NANBEIGE is unset. The cell stays. After its
+#     build, run-suite.sh classifies it FAIL with the reason "inventory gap:
+#     MODEL_NANBEIGE is not set". The cell never passes and never skips there.
+#     A host that holds the inventory runs the suite as written.
 #   * Validation gates are hard-fail: NO continue-on-error on this pinned matrix.
 #   * The nanbeige suite is CPU-only (the arch gate loads with n_gpu_layers=0)
-#     and must pass on STOCK too (upstream adopted the arch — canary finding).
+#     and must pass on STOCK too (upstream adopted the arch).
 name: suites
 
 on:
@@ -43,8 +52,8 @@ jobs:
         include:
           - suite: p2-mixed-batch-lora
             ref: integration
-            profile: p2fork
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-p2fork
+            runner: [self-hosted, gpu, vulkan]
             gpu: true
           - suite: p2-mixed-batch-lora
             ref: master
@@ -53,8 +62,8 @@ jobs:
             gpu: false
           - suite: nanbeige-hats
             ref: integration
-            profile: p2fork
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-p2fork
+            runner: [self-hosted, gpu, vulkan]
             gpu: true
           - suite: nanbeige-hats
             ref: master
@@ -71,40 +80,40 @@ jobs:
             profile: cpu-light
             runner: [self-hosted, cpu]
             gpu: true
-          # Library-mechanism gates (CUDA decode): run on the integration GPU
+          # Library-mechanism gates (GPU decode): run on the integration GPU
           # build only. skip_on_stock=true — the canary's stock build is CPU-only
-          # and cannot exercise CUDA decode gates (their probes check
+          # and cannot exercise GPU decode gates (their probes check
           # llama_supports_gpu_offload).
           - suite: router
             ref: integration
-            profile: p2fork
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-p2fork
+            runner: [self-hosted, gpu, vulkan]
             gpu: true
           - suite: prefix-cache
             ref: integration
-            profile: p2fork
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-p2fork
+            runner: [self-hosted, gpu, vulkan]
             gpu: true
           # The project-24 cached shared-prefix composition + the LoRA-delta
-          # go/no-go probe (benchkit runner gates; same CUDA-decode class).
+          # go/no-go probe (benchkit runner gates; same GPU-decode class).
           - suite: cached-router
             ref: integration
-            profile: p2fork
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-p2fork
+            runner: [self-hosted, gpu, vulkan]
             gpu: true
           - suite: lora-probe
             ref: integration
-            profile: p2fork
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-p2fork
+            runner: [self-hosted, gpu, vulkan]
             gpu: true
           # The routed server's refusal suite. It needs the BINARY, so it is the
-          # one cell on p2fork-server. It ran by hand through stages 4-6A and
+          # one cell on the server profile. It ran by hand through stages 4-6A and
           # was never wired here; that is why its drift went unseen
           # until a session compared branches.
           - suite: p2-server-seq-routing
             ref: integration
-            profile: p2fork-server
-            runner: [self-hosted, cuda, rtx3060]
+            profile: vulkan-mi25-p2fork-server
+            runner: [self-hosted, gpu, vulkan]
             gpu: true
     runs-on: ${{ matrix.runner }}
     name: suite (${{ matrix.suite }} / ${{ matrix.ref }})

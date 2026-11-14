@@ -15,10 +15,11 @@ non-zero exit, never a silent pass.
 Ported from an earlier internal gate. That gate imported its symbol list from a
 library that is not part of this repo, so the list is inlined below.
 
-GPU env per the reference devenv.nix (libcuda-first LD_LIBRARY_PATH, the CI
-device pinned, model path via --model). The CI device is pinned IN-SCRIPT so a
-stray CUDA_VISIBLE_DEVICES can never send the smoke to the server's device
-(GPU 1).
+GPU env per the reference devenv.nix (driver-library-first LD_LIBRARY_PATH, the
+CI device pinned, model path via --model). The CI device is pinned IN-SCRIPT, in
+both the CUDA and the Vulkan device variables, so a stray value in either can
+never send the smoke to the server's device. Each backend reads only its own
+variable and ignores the other.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ SEQ_ROUTING_SYMBOLS: tuple[str, ...] = ("llama_set_seq_adapters", "llama_set_seq
 
 
 def main() -> int:
-    # Pin the CI device before llama_cpp (and thus the CUDA runtime) is imported.
+    # Pin the CI device before llama_cpp (and thus the backend runtime) is imported.
     _ci_gpu = os.environ.get("LLAMA_CI_GPU", "0")
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", _ci_gpu)
     # Vulkan reads its own variable; without it this gate runs on whichever card

@@ -1,7 +1,7 @@
-"""Nanbeige arch suite — the arch-recognition gate as pytest (the canary finding).
+"""Nanbeige-architecture suite — the arch-recognition gate as pytest (the canary finding).
 
 Runs the permanent gate ``ci/gates/nanbeige_arch_gate.py`` against the pointed-at
-lib (LLAMA_CPP_LIB_PATH) and the Nanbeige GGUF. CPU-only (n_gpu_layers=0). The
+lib (LLAMA_CPP_LIB_PATH) and the GGUF of the nanbeige role (MODEL_NANBEIGE). CPU-only (n_gpu_layers=0). The
 capability probe (probes/capability.sh) already established the arch is
 recognized; this test re-runs the FULL gate — symbols (integration builds) or
 load-only semantics, arch metadata, block_count/num_loops, expanded n_layer —
@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 from tests.asset_paths import asset_path
 
-_MODEL_PATH = asset_path("LLAMA_TEST_MODEL")
+_MODEL_PATH = asset_path("MODEL_NANBEIGE")
 _GATE = Path(__file__).resolve().parents[3] / "ci" / "gates" / "nanbeige_arch_gate.py"
 
 
@@ -44,7 +44,7 @@ def _arch_ready() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _arch_ready(),
-    reason="requires LLAMA_CPP_LIB_PATH + the Nanbeige GGUF",
+    reason="requires LLAMA_CPP_LIB_PATH + MODEL_NANBEIGE (a nanbeige-architecture GGUF)",
 )
 
 

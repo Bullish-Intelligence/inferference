@@ -12,7 +12,7 @@ validation semantics, applied to the library's
     (``plan_restore`` semantics);
   * a tampered blob fails the checksum integrity gate (fail-closed reject).
 
-GPU-only: skips (never fails) when the env lacks CUDA-offload lib / model.
+GPU-only: skips (never fails) when the env lacks GPU-offload lib / model.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from tests.asset_paths import asset_path
 
 from inferference.diagnostics import collect_runtime_diagnostics
 from inferference.fingerprint import LlamaEngineFingerprint, register_artifact
-from inferference.gpu_env import gpu_env_ready
+from inferference.gpu_env import GPU_BACKEND_LABEL, gpu_env_ready
 from inferference.prefix_cache import (
     CacheRejectionReason,
     PersistentPrefixCache,
@@ -38,11 +38,11 @@ from inferference.prefix_cache import (
 )
 
 _REPO = Path(__file__).resolve().parents[3]
-_MODEL = asset_path("MODEL_ORNITH")
+_MODEL = asset_path("MODEL_DEFAULT")
 
 
 def _ready() -> bool:
-    # Backend-agnostic: CUDA_VISIBLE_DEVICES means nothing to the Vulkan build,
+    # Backend-agnostic: a vendor device variable means nothing to a build for another backend,
     # and requiring it here SKIPPED this suite on a rig that can run it.
     if not gpu_env_ready():
         return False
@@ -57,7 +57,7 @@ def _ready() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _ready(),
-    reason="requires CUDA-offload lib + Ornith model (GPU env)",
+    reason="requires GPU-offload lib + MODEL_DEFAULT (GPU env)",
 )
 
 
@@ -79,7 +79,7 @@ def test_whole_state_cache_semantic_restore(tmp_path: Path) -> None:
             llama_cpp_python_version=runtime.llama_cpp_python_version or "unknown",
             llama_cpp_commit=runtime.llama_cpp_commit,
             llama_cpp_build_id=runtime.llama_cpp_build_id,
-            backend="cuda",
+            backend=GPU_BACKEND_LABEL,
             n_ctx=n_ctx,
         )
         cache = PersistentPrefixCache(tmp_path / "cache")

@@ -5,7 +5,16 @@
     "probe": "probes/capability.sh",
     "required": true
   },
-  "env": { "GPU": true, "MODEL": "Ornith-1.0-9B-UD-Q4_K_XL.gguf", "LIB": true },
+  "env": {
+    "GPU": true,
+    "MODEL_ROLE": "default",
+    "MODEL_NEEDS": "any model, a matching tokenizer and LoRA probe adapters of the same architecture",
+    "MODEL_VARS": [
+      "MODEL_PROBE_DIR",
+      "TOKENIZER_DEFAULT"
+    ],
+    "LIB": true
+  },
   "tests": ["tests/test_cached_router_gate.py"],
   "skip_on_stock": true
 }

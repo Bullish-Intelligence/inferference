@@ -99,13 +99,14 @@ if [[ -n "$INFERFERENCE_DEFAULT_ROLE" ]]; then
 fi
 
 # --- defaults, for anything the machine file did not set ----------------------
-# Where this machine keeps GGUFs. Roles may name absolute paths and ignore it.
+# Where the host keeps GGUFs. Roles may name absolute paths and ignore it.
 export INFERFERENCE_MODELS_DIR="${INFERFERENCE_MODELS_DIR:-$HOME/.cache/inferference/models}"
 
 # Persistent bench baselines root — OUTSIDE any CI workdir so the baseline store
 # survives cache trims. baseline_gate.py resolves this first; repo
 # ci/.ci-artifacts is the documented fallback. Key = workload@<built-commit>-
-# <featureset>, never a date. Moving this root orphans every existing baseline.
+# <featureset>@<backend>, never a date. A baseline without a backend suffix
+# (an older key) never matches a run. Moving this root orphans every baseline.
 export BASELINES_ROOT="${BASELINES_ROOT:-$HOME/.cache/inferference/baselines}"
 mkdir -p "$BASELINES_ROOT"
 
@@ -120,6 +121,8 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$LLAMA_CI_GPU}"
 # cards and llama.cpp's default `n_gpu_layers = -1` will happily split a model
 # across them.
 export GGML_VK_VISIBLE_DEVICES="${GGML_VK_VISIBLE_DEVICES:-$LLAMA_CI_GPU}"
+# A ROCm build reads HIP_VISIBLE_DEVICES. Same default, same reason.
+export HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-$LLAMA_CI_GPU}"
 
 # --- driver-first library path (see header) -----------------------------------
 # Append the build lib dir when a specific lib set is being loaded (the gates do

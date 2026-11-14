@@ -100,8 +100,8 @@ def test_baselines_save_load_and_regression(tmp_path: Path) -> None:
 def _gpu_snapshot(gpu0_used: int, gpu1_used: int) -> dict[str, str]:
     return {
         "stdout": (
-            "0, NVIDIA GeForce RTX 3060, uuid0, 595.84, 12288 MiB, "
-            f"{gpu0_used} MiB\n1, NVIDIA GeForce RTX 3060, uuid1, 595.84, 12288 MiB, {gpu1_used} MiB\n"
+            "0, NVIDIA Example GPU, uuid0, 595.84, 12288 MiB, "
+            f"{gpu0_used} MiB\n1, NVIDIA Example GPU, uuid1, 595.84, 12288 MiB, {gpu1_used} MiB\n"
         )
     }
 
@@ -120,9 +120,11 @@ def _no_nvidia_smi(*args: object, **kwargs: object) -> None:
     raise FileNotFoundError(2, "No such file or directory", "nvidia-smi")
 
 
-def test_missing_nvidia_smi_reads_as_no_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A host without the nvidia-smi binary reports no GPU; it does not crash."""
+def test_missing_nvidia_smi_reads_as_no_gpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A host with neither nvidia-smi nor an amdgpu card reports no GPU; it does not crash."""
     monkeypatch.setattr(benchkit_env.subprocess, "run", _no_nvidia_smi)
+    monkeypatch.setattr(benchkit_env, "DRM_ROOT", tmp_path)  # an empty tree: no amdgpu card
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     assert benchkit_env.visible_gpu_uuid() is None
     snapshot = benchkit_env.gpu_snapshot()
     assert snapshot["returncode"] == 127

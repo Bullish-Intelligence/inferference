@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Thermal admission control and watchdog for the GPUs on this rig.
+# Thermal admission control and watchdog for the GPUs of the host.
 #
-# OWNER LIMIT: guarded GPU commands default to a maximum of 80 C across all
-# detected amdgpu temperature sensors. The owner lowered the default on
-# 2026-10-02 for the dual V620 rig. A command that crosses the limit is killed.
+# LIMIT: guarded GPU commands default to a maximum of 80 C across all
+# detected amdgpu temperature sensors. A command that crosses the limit is killed.
 #
 # TWO LIMIT ACTIONS. `--on-limit kill` (the default) is the hard stop that
 # builds, gates, and experiments need: the process group dies, exit 75.
-# `--on-limit pause` is for the long-lived serving router (owner decision
-# 2026-10-28: a thermal stop must not ruin an overnight run). The guard freezes
+# `--on-limit pause` is for the long-lived serving router (a thermal stop must
+# not ruin an overnight run). The guard freezes
 # the whole process group with SIGSTOP at MAX_C, and thaws it with SIGCONT when
 # the hottest sensor stays at or below RESUME_C for RESUME_HOLD_S seconds and
 # the fan watchdog reads OK. A pause has no time limit. Only HARD_C kills a
@@ -52,6 +51,13 @@
 #   GPU_THERMAL_FAN_GRACE_S  tolerate an INDETERMINATE fan subsystem for this
 #                            long while watching, default 10. A definite bad
 #                            state still stops the job at once.
+#   GPU_THERMAL_SENDER_TRACE  `run` starts under gpu-thermal-signal-relay.py,
+#                            which logs the PID and command that sent each
+#                            stop signal. Default 1. Set 0 to turn it off. It
+#                            turns itself off, with one log line, when python3
+#                            is missing or broken. It changes no safety rule.
+#   GPU_THERMAL_TRACE_PYTHON  the interpreter for the relay helper, default
+#                            python3 from PATH
 set -euo pipefail
 
 MAX_C="${GPU_THERMAL_MAX_C:-80}"
@@ -268,7 +274,7 @@ cmd_watch() {
 
 # --- pause mode ---------------------------------------------------------------
 
-# Write the current state for the owner. One line of key=value pairs, replaced
+# Write the current state for the operator. One line of key=value pairs, replaced
 # whole so a reader never sees half a line. A missing runtime directory must
 # not stop the job, so a failed write is silent.
 _write_status() {
@@ -530,10 +536,43 @@ cmd_run() {
   return "$rc"
 }
 
+# Sender trace. A Bash trap cannot name the process that sent a signal. For
+# `run`, replace this process with gpu-thermal-signal-relay.py. It starts this
+# script again as its child (GPU_THERMAL_TRACE_ACTIVE marks the child), logs the
+# sender of each signal, and relays the signal to the child once. The child
+# holds every safety rule. Return normally when the helper cannot run, so the
+# guard starts as before and never refuses a start because of the trace.
+_exec_with_sender_trace() {
+  if [[ "${GPU_THERMAL_SENDER_TRACE:-1}" == 0 || -n "${GPU_THERMAL_TRACE_ACTIVE:-}" ]]; then
+    return 0
+  fi
+  local self="${BASH_SOURCE[0]}" relay py
+  relay="$(dirname -- "$self")/gpu-thermal-signal-relay.py"
+  if [[ ! -r "$relay" ]]; then
+    echo ">> [thermal] sender trace is off: $relay is missing" >&2
+    return 0
+  fi
+  py="${GPU_THERMAL_TRACE_PYTHON:-$(command -v python3 2>/dev/null || true)}"
+  if [[ -z "$py" && -x /run/current-system/sw/bin/python3 ]]; then
+    py=/run/current-system/sw/bin/python3
+  fi
+  if [[ -z "$py" ]] || ! "$py" -I -S -c 'import signal, subprocess, datetime' 2>/dev/null; then
+    echo ">> [thermal] sender trace is off: no working python3" >&2
+    return 0
+  fi
+  export GPU_THERMAL_TRACE_ACTIVE=1
+  shopt -s execfail
+  exec "$py" -I -S "$relay" -- "$BASH" "$self" run -- "$@" || {
+    shopt -u execfail
+    echo ">> [thermal] sender trace is off: cannot start $py" >&2
+    return 0
+  }
+}
+
 case "${1:-}" in
   check) shift; cmd_check "$@" ;;
   cool)  shift; cmd_cool  "$@" ;;
   watch) shift; cmd_watch "$@" ;;
-  run)   shift; [[ "${1:-}" == "--" ]] && shift; cmd_run "$@" ;;
+  run)   shift; [[ "${1:-}" == "--" ]] && shift; _exec_with_sender_trace "$@"; cmd_run "$@" ;;
   *) echo "usage: gpu-thermal-guard.sh {check|cool|watch <pid>|run [--on-limit kill|pause] -- <cmd>}" >&2; exit 3 ;;
 esac

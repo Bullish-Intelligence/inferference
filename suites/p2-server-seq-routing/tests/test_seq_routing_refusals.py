@@ -3,16 +3,16 @@
 *Every* refusal R-1..R-7,
 warning W-1..W-4 and per-request refusal Q-1..Q-2 has a test that asserts the
 status code and that the message names the missing thing. The conditions and the
-message text are ``spikes/S11/interactions.md`` section 8 - observed by a probe,
-not derived from a reading.
+message text come from a probe of the real server, not from a reading of the
+source.
 
 Two properties of this file are load-bearing:
 
 * **Nothing is read out of the source.** Each case launches the real binary and
   reads its exit code and its stderr. R-2's pre-fix failure mode is ``abort()``,
-  so a code reading proves nothing about it (kickoff section 7 gate 8).
-* **No GPU.** ``CUDA_VISIBLE_DEVICES`` is emptied for every child, so the server
-  is unambiguously CPU-only and needs no place in the rig's GPU arbitration.
+  so a code reading proves nothing about it.
+* **No GPU.** Every device-visibility variable is emptied for every child, so the server
+  is unambiguously CPU-only and needs no place in the GPU arbitration.
   A refusal fires after the model loads and before the port binds; the device is
   not part of any condition under test.
 
@@ -38,18 +38,20 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.asset_paths import asset_path
 
 from inferference.gpu_env import VISIBLE_DEVICE_VARS
 
-MODELS = Path(os.environ.get("INFERFERENCE_MODELS_DIR", "~/.cache/inferference/models")).expanduser()
-MODEL = Path(os.environ.get("MODEL_NANBEIGE", str(MODELS / "Nanbeige4.2-3B-UD-Q4_K_XL.gguf")))
-PROBE_DIR = Path(os.environ.get("MODEL_NANBEIGE_LORA_PROBE", str(MODELS / "nanbeige-lora-probe")))
+# Machine inventory. An unset variable gives a path that cannot exist, so the
+# module skips and the skip reason names the variable.
+MODEL = asset_path("MODEL_NANBEIGE")
+PROBE_DIR = asset_path("MODEL_NANBEIGE_LORA_PROBE")
 LORA_A = PROBE_DIR / "suite-probe-a.gguf"
 LORA_B = PROBE_DIR / "suite-probe-b.gguf"
 
 # Nanbeige is dense and 201 tensors, so at --batch-size 128 an unfixed library
 # admits floor((max(128*40, 32*201) - 1371) / 2156) = 2 pool adapters and aborts
-# at 3 (S11-P6, re-measured in 08 section 4).
+# at 3.
 UNFIXED_CEILING_BATCH = 128
 UNFIXED_CEILING_POOL = 3
 
@@ -66,7 +68,8 @@ pytestmark = pytest.mark.skipif(
     not _ready(),
     reason=(
         "requires a stage-4 build (LLAMA_CPP_LIB_PATH -> <out>/lib with <out>/bin/llama-server), "
-        f"the Nanbeige model at {MODEL} and the probe adapters in {PROBE_DIR}"
+        f"MODEL_NANBEIGE (a nanbeige-architecture GGUF; now {MODEL}) and "
+        f"MODEL_NANBEIGE_LORA_PROBE adapters (now {PROBE_DIR})"
     ),
 )
 
@@ -109,7 +112,7 @@ def _argv(port: int, loras: list[Path], extra: list[str]) -> list[str]:
 def _child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ)
     # No device at all: these cases are device-independent, and a server that
-    # takes no device needs no place in the rig's GPU arbitration.
+    # takes no device needs no place in the GPU arbitration.
     # FORCE CPU-ONLY ON EVERY BACKEND. Emptying CUDA_VISIBLE_DEVICES alone does
     # NOT do this on a Vulkan build -- ggml ignores it, the child still finds
     # both cards, and these refusal cases then run WITH offload, silently
@@ -211,13 +214,13 @@ def assert_refused(rc: int, out: str, ident: str, *fragments: str) -> None:
 
 @pytest.fixture(scope="module")
 def moe_gguf(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """S11-P5's positive control: metadata naming an expert weight.
+    """The positive control for R-5: metadata naming an expert weight.
 
     Written rather than found, because no adapter on this rig targets an expert
     tensor and no MoE model is present. It is never loaded as an adapter - the
     shipped scanner reads tensor names, and that is the whole of R-5.
 
-    S11 wrote a metadata-only file for this. ggml's own reader rejects that one
+    A metadata-only file does not work here. ggml's own reader rejects that one
     (``gguf_init_from_reader: failed to seek to beginning of data section``), so
     the control here carries a real, aligned data section: four 1x1 f32 tensors
     at the default 32-byte alignment.
@@ -276,7 +279,7 @@ def _lib_without_scaled() -> Path | None:
 
 
 def test_r1_library_without_the_routing_symbols() -> None:
-    """R-1 [S9] - name the symbol the loaded libllama does not export."""
+    """R-1 - name the symbol the loaded libllama does not export."""
     older = _lib_without_scaled()
     if older is None:
         pytest.skip(
@@ -291,7 +294,7 @@ def test_r1_library_without_the_routing_symbols() -> None:
 
 
 def test_r2_pool_above_the_node_ceiling_on_an_unfixed_library() -> None:
-    """R-2 [S11-P6] - refuse, rather than abort inside llama_decode.
+    """R-2 - refuse, rather than abort inside llama_decode.
 
     Gate 9, half one. The pre-fix failure mode is ``abort()``: reading the code
     proves nothing, so this drives an actual unfixed library.
@@ -339,13 +342,13 @@ def test_r2_does_not_fire_on_a_fixed_library() -> None:
 
 
 def test_r3_routing_with_hats() -> None:
-    """R-3 [S11-P2] - registering hats disables routing entirely, silently."""
+    """R-3 - registering hats disables routing entirely, silently."""
     rc, out = start_refused([LORA_A, LORA_B], ["--lora-seq-routing"], env={"LLAMA_SEQ_ROUTING_TEST_FORCE": "hats"})
     assert_refused(rc, out, "R-3", "loop-adapter (hats) routing", "bit-identical to the base model")
 
 
 def test_r4_routing_with_the_prompt_cache() -> None:
-    """R-4 [S11-P3] - the cache entry carries no adapter to compare against."""
+    """R-4 - the cache entry carries no adapter to compare against."""
     rc, out = start_refused([LORA_A, LORA_B], ["--lora-seq-routing", "--cache-ram", "8192"])
     assert_refused(rc, out, "R-4", "--cache-ram 0", "no adapter identity")
 
@@ -369,7 +372,7 @@ def test_r4_does_not_fire_with_the_cache_off() -> None:
 
 
 def test_r5_adapter_targeting_an_expert_weight(moe_gguf: Path) -> None:
-    """R-5 [S11-P5] - build_lora_mm_id has no seq branch, so the delta vanishes."""
+    """R-5 - build_lora_mm_id has no seq branch, so the delta vanishes."""
     rc, out = start_refused(
         [LORA_A, LORA_B],
         ["--lora-seq-routing"],
@@ -379,20 +382,20 @@ def test_r5_adapter_targeting_an_expert_weight(moe_gguf: Path) -> None:
 
 
 def test_r5_stays_quiet_on_the_real_adapters() -> None:
-    """The negative control S11-P5 also ran: neither probe adapter is MoE."""
+    """The negative control for R-5: neither probe adapter is MoE."""
     with RunningServer([LORA_A, LORA_B], ["--lora-seq-routing"]) as srv:
         with urllib.request.urlopen(f"{srv.base_url}/health", timeout=10) as r:  # noqa: S310
             assert "ok" in r.read().decode()
 
 
 def test_r6_parallel_above_n_seq_max() -> None:
-    """R-6 [S11-P1] - defence in depth; unreachable without the test hook."""
+    """R-6 - defence in depth; unreachable without the test hook."""
     rc, out = start_refused([LORA_A, LORA_B], ["--lora-seq-routing"], env={"LLAMA_SEQ_ROUTING_TEST_FORCE": "n_seq_max"})
     assert_refused(rc, out, "R-6", "exceeds the context's n_seq_max", "out of bounds")
 
 
 def test_r7_alora_adapter() -> None:
-    """R-7 [S2] - alora activation is per-slot state the routing path drops."""
+    """R-7 - alora activation is per-slot state the routing path drops."""
     rc, out = start_refused([LORA_A, LORA_B], ["--lora-seq-routing"], env={"LLAMA_SEQ_ROUTING_TEST_FORCE": "alora"})
     assert_refused(rc, out, "R-7", "activated LoRA (alora)", str(LORA_A))
 
@@ -489,7 +492,7 @@ def test_w5_stays_quiet_at_pool_one() -> None:
 
 
 def test_w2_names_the_lora_pair_count_not_only_the_pool_size() -> None:
-    """W-2 [S8, S10] - pair count is what predicts the cost. Both probes are 3."""
+    """W-2 - pair count is what predicts the cost. Both probes are 3."""
     out = _warnings_of([LORA_A, LORA_B], ["--lora-seq-routing"])
     assert "W-2" in out, out[-3000:]
     assert "pool of 2 adapters carrying 3, 3 LoRA pairs" in out, out[-3000:]
@@ -500,7 +503,7 @@ def test_w2_names_the_lora_pair_count_not_only_the_pool_size() -> None:
 def test_w4_falls_back_and_says_so_without_a_device() -> None:
     """W-4 [19] - D3's cap is computed from VRAM, and this suite has no GPU.
 
-    Every case here runs with CUDA_VISIBLE_DEVICES emptied, so no offload device
+    Every case here runs with the device-visibility variables emptied, so no offload device
     reports free memory and the bound cannot be computed. The fallback to D3's
     constant of 3 must be LOUD: a missing capability is never a silent pass.
     """
@@ -569,7 +572,7 @@ def test_w4_names_the_measured_numbers_when_the_device_is_tight() -> None:
 
 
 def test_w3_draft_model() -> None:
-    """W-3 [S11-P4] - the draft context carries no adapters. 82 drafted, 0 taken."""
+    """W-3 - the draft context carries no adapters. 82 drafted, 0 taken."""
     # --spec-type is what actually builds the draft context. Without it the
     # server loads the draft model and never speculates, so there is no hazard
     # and W-3 must stay quiet - the second case below is that control.
@@ -645,7 +648,7 @@ def test_a_single_enabled_adapter_is_accepted(routed_server: RunningServer) -> N
 
 
 def test_a_zero_scale_request_is_the_base_model(routed_server: RunningServer) -> None:
-    """A base seat costs one mask column of zeros and no matmul (S6 section 2.3)."""
+    """A base seat costs one mask column of zeros and no matmul."""
     status, body = routed_server.completion(
         {
             "prompt": "hi",

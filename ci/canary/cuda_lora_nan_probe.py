@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Committed CUDA LoRA NaN reproducer (Task 1, step-6 kickoff prompt).
+"""Committed CUDA LoRA NaN reproducer.
 
 Characterizes the stock CUDA LoRA NaN precisely: a FULL-coverage adapter (all
 22 nanbeige layers x ffn_up/ffn_gate pairs) produces all-NaN logits on the
 CUDA LoRA path, while minimal-coverage adapters stay clean and CPU is always
 correct. Reproduced on the STANDARD ``llama_set_adapters_lora`` path (no
-P2/hats fork code) on both anchors (step-5 report 13-…-REPORT.md Task 3).
+P2/hats fork code) on both anchors.
 
 Given a lib dir + model + adapter, this probe decodes once (batch-1 prefill)
 and reports ``nan_count`` / ``argmax`` of the first-token logits, optionally

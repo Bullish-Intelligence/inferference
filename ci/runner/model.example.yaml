@@ -1,4 +1,5 @@
-# One model. Install as ~/.config/inferference/models/<name>.yaml
+# One model. Install as <config dir>/models/<name>.yaml (see placement.example.yaml
+# for how the config dir is chosen).
 # The file name is the model's name: it becomes the INI section, the value of a
 # request's "model" field, and how the placement refers to it.
 

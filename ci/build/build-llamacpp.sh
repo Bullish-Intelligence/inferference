@@ -19,6 +19,17 @@
 #     108d4d756 / 52da9663c / fa8cab171 on feat/p2-mixed-batch-lora all carry
 #     sha256 8b618ac212fc667188cef8abad8054f40ea5e7c67b2023f0fcb6466e534ff752).
 #
+# The build does not put the lane path into the files. The compile maps every
+# build path to a fixed token (-ffile-prefix-map) and every collected file
+# carries a $ORIGIN-relative RUNPATH. Two builds give byte-identical bin/ and
+# lib/ files only under all of these conditions:
+#   * the same profile, ref and patch;
+#   * the same host CPU (GGML_NATIVE=ON compiles with -march=native);
+#   * the same devenv.lock (the RUNPATH keeps the nix store paths);
+#   * ccache on in both builds.
+# The Mode A wheel is outside this claim. See "Path-independent build" below and
+# ci/build/build-manifest.md.
+#
 # Run inside `devenv shell` (gcc, cmake, ninja, ccache, and the CUDA toolkit are
 # devenv packages; NIXPKGS_ALLOW_UNFREE=1 for the unfree CUDA toolkit). See
 # ci/build/build-manifest.md for the manifest contract, and
@@ -30,7 +41,12 @@
 #   build-llamacpp.sh --ref <git-ref|local:PATH> \
 #       --profile <cpu-light|cuda-3060|cuda-3060-server|p2fork|p2fork-server
 #                  |vulkan-mi25|vulkan-mi25-server
-#                  |vulkan-mi25-p2fork-server> [--out DIR]
+#                  |vulkan-mi25-p2fork-server|vulkan-p2fork> [--out DIR]
+#
+# The vulkan-p2fork profile is the library-only sibling of
+# vulkan-mi25-p2fork-server: the same fork tree, the same Vulkan flags, the same
+# residency patch, and no server target. It builds the lib set and the headers
+# that ci/runner/run-suite.sh and the ABI gate use. Its name holds no hardware.
 #
 # The vulkan-mi25-p2fork-server profile is the P2 fork's source tree built with
 # the Vulkan backend instead of CUDA: the mixed-batch per-sequence
@@ -39,7 +55,7 @@
 # axes at once, which no profile did before.
 #
 # The p2fork-server profile is p2fork plus the server binary
-# (005-server-seq-routing spike S4). It shares p2fork's CUDA flags, its src
+# (the server sequence-routing build). It shares p2fork's CUDA flags, its src
 # checkout, and its provenance checks; it adds -DLLAMA_BUILD_SERVER=ON, builds
 # the explicit `llama llama-server` target pair, and collects bin/llama-server
 # into <out>/bin/. Every other profile is byte-identical to before.
@@ -75,8 +91,8 @@ mkdir -p "$work"
 # flag `case` below was flat, so the profile is added there too rather than
 # refactored — the two axes that matter are already separate.
 case "$PROFILE" in
-  p2fork | p2fork-server | vulkan-mi25-p2fork-server) is_p2fork=1 ;;
-  *)                                                  is_p2fork=0 ;;
+  p2fork | p2fork-server | vulkan-mi25-p2fork-server | vulkan-p2fork) is_p2fork=1 ;;
+  *)                                                                  is_p2fork=0 ;;
 esac
 build_server=$([[ "$PROFILE" == *-server ]] && echo 1 || echo 0)
 
@@ -269,7 +285,7 @@ case "$PROFILE" in
     flags=( "${common[@]}" -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
             -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF )
     ;;
-  vulkan-mi25 | vulkan-mi25-server | vulkan-mi25-p2fork-server)
+  vulkan-mi25 | vulkan-mi25-server | vulkan-mi25-p2fork-server | vulkan-p2fork)
     # AMD Instinct MI25 (Vega 10 / gfx900), two cards, capped at 110 W.
     #
     # WHY VULKAN AND NOT ROCM/HIP: ROCm dropped gfx900 after 5.7, so a HIP build
@@ -351,11 +367,91 @@ ln -sfn "$src" "$src_link"
 # reconfigures the build dir on every run, above.
 echo "$src" > "${build}/SOURCE-TREE"
 
+# --- path-independent build (the lane path does not change the bytes) -------
+# Two builds of one profile, ref and patch give identical bin/ and lib/ files in
+# any lane or directory, when the host CPU, devenv.lock and ccache setting are
+# also the same (see the header). Before this block, two lane-dependent byte
+# groups broke it:
+#   * __FILE__ strings in .rodata. GGML_ASSERT in ggml-vulkan.cpp and ggml-impl.h
+#     expands to an absolute path under <lane>/.../src-active. The path length
+#     also shifts RIP-relative code in libggml-base.
+#   * the RUNPATH, which cmake fills with the build-tree path (handled below,
+#     at the collect step).
+# -ffile-prefix-map rewrites a path prefix in __FILE__ and in debug info. Map
+# every absolute path that can reach the compiler to a fixed token: the compile
+# link, the real source tree, and the build dir. Release builds carry no debug
+# info, but the map covers it if a profile adds -g.
+# ccache keeps working across lanes with two settings:
+#   * CCACHE_BASEDIR is the garage dir. ccache then rewrites every path under the
+#     garage to a path relative to the build dir (../src-active/...), which is the
+#     same in every lane. The compiler sees that relative path, so __FILE__ holds
+#     it. The map for "../src-active" below turns it into the same token as the
+#     absolute form. A build with ccache off still differs in one header assert
+#     string (ccache also rewrites the include paths), so compare only builds
+#     made with the same ccache setting.
+#   * CCACHE_IGNOREOPTIONS leaves the -ffile-prefix-map options out of the hash.
+#     They name the lane and would split the key. They do not change the object:
+#     the map output is the same fixed token in every lane.
+# CMAKE_C_FLAGS holds the maps as a space-separated string, so a path with
+# whitespace would split a flag. Refuse such a path.
+src_token="/llama.cpp/src"
+build_token="/llama.cpp/build"
+real_src="$(cd "$src" && pwd -P)"
+real_build="$(cd "$build" && pwd -P)"
+for p in "$work" "$src" "$build" "$real_src" "$real_build"; do
+  if [[ "$p" == *[[:space:]]* ]]; then
+    echo "!! path with whitespace cannot go into CMAKE_C_FLAGS: '${p}'" >&2
+    echo "!! Run the build from a path with no whitespace." >&2
+    exit 3
+  fi
+done
+# A path that equals an earlier one (a tree with no symlink) is mapped once.
+prefix_maps=()
+_add_map() {
+  local m="-ffile-prefix-map=${1}=${2}"
+  [[ " ${prefix_maps[*]:-} " == *" ${m} "* ]] || prefix_maps+=( "$m" )
+}
+for from in "$src_link" "$src" "$real_src" "../$(basename "$src_link")"; do
+  _add_map "$from" "$src_token"
+done
+for from in "$build" "$real_build"; do
+  _add_map "$from" "$build_token"
+done
+path_flags=(
+  "-DCMAKE_C_FLAGS=${prefix_maps[*]}"
+  "-DCMAKE_CXX_FLAGS=${prefix_maps[*]}"
+  # No build-tree RUNPATH. The collect step sets the final RUNPATH on every file.
+  -DCMAKE_SKIP_BUILD_RPATH=ON
+)
+if [[ " ${flags[*]} " == *" -DGGML_CUDA=ON "* ]]; then
+  # nvcc passes host-compiler options through -Xcompiler. Device code strings
+  # are outside this map.
+  cuda_maps=""
+  for m in "${prefix_maps[@]}"; do cuda_maps+="${cuda_maps:+ }-Xcompiler ${m}"; done
+  path_flags+=( "-DCMAKE_CUDA_FLAGS=${cuda_maps}" )
+fi
+if [[ " ${flags[*]} " == *" -DGGML_VULKAN=ON "* ]]; then
+  # glslc leaves bits in a few SPIR-V constants that depend on the length of its
+  # path arguments (shader tri_f16). The wrapper gives glslc paths of fixed
+  # length, so the shaders and libggml-vulkan.so match in every lane. See the
+  # header of ci/build/glslc-stable.sh.
+  GLSLC_REAL="$(command -v glslc || true)"
+  if [[ -z "$GLSLC_REAL" ]]; then
+    echo "!! ${PROFILE}: glslc not found on PATH. The Vulkan backend needs it." >&2
+    exit 3
+  fi
+  export GLSLC_REAL
+  path_flags+=( "-DVulkan_GLSLC_EXECUTABLE=${here}/glslc-stable.sh" )
+fi
+export CCACHE_BASEDIR="$work"
+export CCACHE_IGNOREOPTIONS="-ffile-prefix-map=*"
+
 echo ">> building llama.cpp ref=${built_ref} (requested ${REF}) profile=${PROFILE}"
 echo ">> flags: ${flags[*]}"
+echo ">> path flags: ${path_flags[*]}"
 echo ">> compile path: ${src_link} -> ${src}"
 
-cmake -S "$src_link" -B "$build" "${flags[@]}"
+cmake -S "$src_link" -B "$build" "${flags[@]}" "${path_flags[@]}"
 
 # --- verify the server flag actually took (fail-closed) -----------------------
 # p2fork-server passes -DLLAMA_BUILD_SERVER twice on one command line (OFF from
@@ -397,12 +493,7 @@ find "$build" -name 'libllama.so*' -o -name 'libggml*.so*' -o -name 'libmtmd.so*
 # main.cpp shim, tools/server/CMakeLists.txt:57-63). Collect them too, or the
 # copied binary is not an artifact — it is a pointer into the build tree.
 #
-# cmake writes a build-tree RUNPATH: an ABSOLUTE path into
-# .llamacpp-builds/build-<profile>-<ref>/bin. That directory is prunable
-# (ci/build/prune-builds.sh keeps only the newest build-* per profile), so the
-# collected binary would break on the next rebuild of any other ref. Prepend
-# $ORIGIN-relative entries so <out>/ is self-contained, and KEEP the existing
-# entries so the nix-store glibc/gcc/CUDA paths still resolve.
+# The RUNPATH of every collected file is set below, for every profile.
 server_built=false
 if (( build_server )); then
   srv="$(find "$build" -type f -name 'llama-server' -perm -u+x | head -1)"
@@ -415,21 +506,69 @@ if (( build_server )); then
     | while read -r f; do cp -av "$f" "${OUT}/lib/"; done
   mkdir -p "${OUT}/bin"
   cp -av "$srv" "${OUT}/bin/"
+fi
 
-  if ! command -v patchelf >/dev/null 2>&1; then
-    echo "!! ${PROFILE}: patchelf not found. The collected binary would keep an" >&2
-    echo "!! absolute RUNPATH into the prunable build garage. Refusing to emit a" >&2
-    echo "!! manifest claiming server_built for a non-relocatable artifact." >&2
+# --- RUNPATH: $ORIGIN-relative only, for every profile ------------------------
+# cmake would write an ABSOLUTE build-tree path into each RUNPATH:
+# .llamacpp-builds/build-<profile>-<ref>/bin. Two problems follow. The path names
+# the lane, so the same build in two lanes differs in bytes. And the directory
+# is prunable (ci/build/prune-builds.sh keeps only the newest build-* per
+# profile), so the collected file would break on the next rebuild of any other
+# ref. -DCMAKE_SKIP_BUILD_RPATH=ON stops cmake from writing it. This step also
+# removes any entry under the garage, the source tree or the build tree, drops
+# empty entries (an empty entry means the working directory), and puts the
+# $ORIGIN entry first: $ORIGIN for a lib, $ORIGIN/../lib for a binary. The
+# entries that remain are the nix-store paths from the compiler wrapper (glibc,
+# gcc, the vulkan loader), but not the devenv-shell-env entry (see below). They
+# hold no lane path, and the same shell gives the same store paths. patchelf
+# then checks the result: any leftover build path is exit 3.
+if ! command -v patchelf >/dev/null 2>&1; then
+  echo "!! ${PROFILE}: patchelf not found. The collected files would keep a" >&2
+  echo "!! build-tree RUNPATH that names the lane. Refusing to emit a manifest" >&2
+  echo "!! for an artefact whose bytes depend on the lane path." >&2
+  exit 3
+fi
+# $1 = file, $2 = the $ORIGIN entry. Reads the old RUNPATH, writes the new one.
+_fix_runpath() {
+  local f="$1" origin="$2" old entry kept=() out
+  old="$(patchelf --print-rpath "$f")"
+  local IFS=:
+  for entry in $old; do
+    [[ -n "$entry" ]] || continue
+    case "$entry" in
+      '$ORIGIN'*) continue ;;
+      # The compiler wrapper adds <store>/<hash>-devenv-shell-env/lib. That store path is
+      # an env script, not a directory, and its hash changes with the lane (it holds
+      # the shell root). No library lives there.
+      /nix/store/*-devenv-shell-env/*) continue ;;
+      "$work"/* | "$work" | "$src"/* | "$src" | "$real_src"/* | "$real_src" | "$build"/* | "$build" | "$real_build"/* | "$real_build") continue ;;
+    esac
+    case ":${kept[*]}:" in *":${entry}:"*) continue ;; esac
+    kept+=( "$entry" )
+  done
+  out="$origin"
+  (( ${#kept[@]} )) && out="${origin}:${kept[*]}"
+  patchelf --set-rpath "$out" "$f"
+}
+for so in "${OUT}"/lib/*.so*; do
+  [[ -f "$so" && ! -L "$so" ]] || continue
+  _fix_runpath "$so" '$ORIGIN'
+done
+for exe in "${OUT}"/bin/*; do
+  [[ -f "$exe" && ! -L "$exe" ]] || continue
+  _fix_runpath "$exe" '$ORIGIN/../lib'
+done
+for f in "${OUT}"/lib/*.so* "${OUT}"/bin/*; do
+  [[ -f "$f" && ! -L "$f" ]] || continue
+  rp="$(patchelf --print-rpath "$f")"
+  if [[ "$rp" != '$ORIGIN'* || "$rp" == *"$work"* || "$rp" == *"$real_src"* || "$rp" == *"$real_build"* || "$rp" == *::* || "$rp" == *: ]]; then
+    echo "!! ${PROFILE}: ${f} has a RUNPATH that depends on the build location:" >&2
+    echo "!! ${rp}" >&2
     exit 3
   fi
-  old="$(patchelf --print-rpath "${OUT}/bin/llama-server")"
-  patchelf --set-rpath "\$ORIGIN/../lib:${old}" "${OUT}/bin/llama-server"
-  for so in "${OUT}"/lib/*.so*; do
-    [[ -f "$so" && ! -L "$so" ]] || continue
-    old_so="$(patchelf --print-rpath "$so" 2>/dev/null || true)"
-    patchelf --set-rpath "\$ORIGIN:${old_so}" "$so" 2>/dev/null || true
-  done
+done
 
+if (( build_server )); then
   # Prove the collect, do not assert it: resolve the binary's libraries with the
   # build tree hidden from the loader. A single "not found" means the artifact
   # is incomplete, and an incomplete artifact must never ship a green manifest.
@@ -471,12 +610,22 @@ if [[ -z "$ggml_lib_path" ]]; then
   exit 3
 fi
 ggml_ver="$(basename "$ggml_lib_path")"
+# The build copies llama.cpp's own MIT licence beside the manifest (<out>/LICENSE.llama.cpp).
+# The libraries and the server binary contain llama.cpp and ggml code, and the licence
+# requires its notice to travel with them. It sits outside bin/ and lib/, so the file
+# hashes do not change. mode-a-server.sh publishes it with the server.
+if [[ ! -f "${src}/LICENSE" ]]; then
+  echo "!! ${PROFILE}: no LICENSE in the source tree ${src}. Refusing to emit an" >&2
+  echo "!! artefact that holds llama.cpp code and no licence notice." >&2
+  exit 3
+fi
+cp "${src}/LICENSE" "${OUT}/LICENSE.llama.cpp"
 if (( is_p2fork )); then seq_routing=true; else seq_routing=false; fi
 # server_seq_routing: does the server binary in THIS build call the routing API?
 # Derived from the compiled source, never from the profile name — the same
 # fail-closed shape as the include/llama.h check above. A stock tools/server/
-# tree gives false even on the p2fork-server profile, which is exactly the S4
-# stage-1 answer; it flips to true only when the stage-4 edits land.
+# tree gives false even on the p2fork-server profile, which is the expected
+# answer for a stock server tree; it flips to true only when the routing edits land.
 server_seq_routing=false
 if [[ "$server_built" == true ]] \
    && grep -rq 'llama_set_seq_adapter' "${src}/tools/server/"; then
@@ -504,7 +653,8 @@ cat > "${OUT}/build-manifest.json" <<JSON
   "patch_sha256": "${patch_sha}",
   "seq_adapter_routing": ${seq_routing},
   "server_built": ${server_built},
-  "server_seq_routing": ${server_seq_routing}
+  "server_seq_routing": ${server_seq_routing},
+  "path_prefix_maps": "${src_token} ${build_token}"
 }
 JSON
 

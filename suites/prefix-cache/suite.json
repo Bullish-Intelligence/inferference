@@ -5,7 +5,12 @@
     "probe": "probes/capability.sh",
     "required": true
   },
-  "env": { "GPU": true, "MODEL": "Ornith-1.0-9B-UD-Q4_K_XL.gguf", "LIB": true },
+  "env": {
+    "GPU": true,
+    "MODEL_ROLE": "default",
+    "MODEL_NEEDS": "any model",
+    "LIB": true
+  },
   "tests": [
     "tests/test_prefix_cache_validation.py",
     "tests/test_seq_reuse_validation.py"

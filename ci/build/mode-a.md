@@ -34,7 +34,7 @@ ci/build/mode-a-prep.sh
 # 2. source rebuild + install the wheel into ci/modea/.venv (CPython 3.13 —
 #    llama-cpp-python 0.3.34 has no cp314 wheel). Emits the version tuple
 #    ci/build/modea-version-tuple.json.
-NIXPKGS_ALLOW_UNFREE=1 devenv shell -- ci/build/mode-a-build.sh
+NIXPKGS_ALLOW_UNFREE=1 MODEA_BACKEND=<cuda|vulkan> devenv shell -- ci/build/mode-a-build.sh
 ```
 
 Prep removes `.agents` trees and Copier answer files from the nested source
@@ -46,34 +46,125 @@ Set `MODEA_PYTHON` to select a Python 3.13 interpreter. Use one that shares
 the build toolchain's C library. The build refuses an interpreter that cannot
 import the bundled libraries.
 
-The build recipe: `CMAKE_ARGS=
-"-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86" FORCE_CMAKE=1 uv pip install
---no-binary llama-cpp-python <vendor path>`. The CUDA toolkit, gcc, cmake,
-ninja, ccache are devenv packages.
+The build recipe: `CMAKE_ARGS="<backend flags>" FORCE_CMAKE=1 uv pip install
+--no-binary llama-cpp-python <vendor path>`. The backend flags name the backend
+of the machine that serves the wheel. For a Vulkan build use `-DGGML_VULKAN=ON`.
+For a CUDA build use `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=<arch>`.
+Set `MODEA_BACKEND=vulkan` (or `cuda`), or set `CMAKE_ARGS` yourself. Without
+either, `mode-a-build.sh` builds for CUDA. The build checks that the bundled libs
+match the flags. The backend SDK (the Vulkan headers and shader compiler, or
+the CUDA toolkit), gcc, cmake, ninja and ccache must be on the build path.
 
-## Verification (Q10) — the wheel's own bundled libs, no swap
+## Verification — the wheel's own bundled libs, no swap
 
 The wheel bundles the lib set at `<venv>/lib/python3.13/site-packages/llama_cpp/lib`.
 "Without `LLAMA_CPP_LIB_PATH`" means: point the gates at THAT lib dir (the
-wheel's own pair), never at a separate Mode-B build dir:
+wheel's own pair), never at a separate Mode-B build dir.
+
+The reference host serves on Vulkan. The commands below are the Vulkan release path.
+The older CUDA commands are at the end of this section as history.
+
+### Vulkan release path
+
+Run every command from the repository root, inside the devenv. `<server out>`
+is the raw build dir of the server (`ci/build/.llamacpp-builds/out-<profile>-<ref>-residency-<patch12>`).
+`<card>` is the card index that the lease grants. Models come from the machine
+inventory: `ci/runner/rig-env.sh` exports `MODEL_DEFAULT`. Do not type a model name.
+
+1. Prepare and build the wheel. No GPU. It records the patch hash in
+   `ci/build/vendor-manifest.json`, and the real flags in `ci/build/modea-version-tuple.json`.
+   Both files are tracked and generated. Never edit them by hand.
+
+   ```bash
+   bash ci/build/mode-a-prep.sh
+   MODEA_BACKEND=vulkan MODEA_SKIP_SERVER=1 MODEA_PYTHON=<python 3.13> bash ci/build/mode-a-build.sh
+   grep build_flags ci/build/modea-version-tuple.json     # must say GGML_VULKAN=ON and GGML_CUDA=OFF
+   ```
+
+   `MODEA_PYTHON` must run on the glibc of the build toolchain. The libs need
+   the toolchain glibc, and an older interpreter cannot load them ("version
+   `GLIBC_2.43' not found"). Compare the glibc of the interpreter and of the
+   toolchain before the build:
+   `ldd "$MODEA_PYTHON" | grep libc.so` and `ldd "$(gcc -print-file-name=libstdc++.so)" | grep libc.so`.
+   The same rule holds for the library venv (`LIBRARY_BASE_PYTHON`) that runs the suites.
+
+   `MODEA_SKIP_SERVER=1` builds only the wheel. Build the server with
+   `ci/build/build-llamacpp.sh --ref <fork commit> --profile vulkan-mi25-p2fork-server`.
+   To build the fork library alone (no wheel, no server), use
+   `ci/build/build-llamacpp.sh --ref <fork commit> --profile vulkan-p2fork`.
+   It applies the same residency patch. Its out dir feeds `ci/runner/run-suite.sh --out`
+   and the ABI gate (`--profile vulkan-p2fork`).
+
+2. ABI gate. No GPU. It compiles against the headers of `<server out>`.
+   A compile failure is ABI drift. Stop (rule 2). Never edit the cdef.
+
+   ```bash
+   WHEEL_LIB="$PWD/ci/modea/.venv/lib/python3.13/site-packages/llama_cpp/lib"
+   ci/gates/.venv/bin/python ci/gates/cffi_bindgen.py \
+     --lib-dir "$WHEEL_LIB" --include-dir <server out>/include \
+     --profile vulkan-mi25-p2fork-server --out-dir <scratch dir> --check        # exit 0
+   ```
+
+3. ABI smoke on the wheel's libs. GPU. The lease pins one card. The gate then
+   reads that card from `LLAMA_CI_GPU`.
+
+   ```bash
+   source ci/runner/rig-env.sh
+   export LLAMA_CPP_LIB_PATH="$WHEEL_LIB"
+   export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LLAMA_CPP_LIB_PATH:$(dirname $(gcc -print-file-name=libstdc++.so)):$(dirname $(gcc -print-file-name=libgomp.so))"
+   GPU_LEASE_CARDS=<card> GPU_LEASE_TIMEOUT=10 ci/runner/gpu-lease.sh <MiB> -- \
+     ci/modea/.venv/bin/python ci/gates/abi_smoke_gate.py --model "$MODEL_DEFAULT"   # exit 0
+   ```
+
+4. Smoke gate on the server build. GPU. Run it once per card. It proves the PCI
+   address, the layer assignment, the VRAM rise and a flat GTT.
+
+   ```bash
+   GPU_LEASE_CARDS=<card> GPU_LEASE_TIMEOUT=10 ci/runner/gpu-lease.sh <MiB> -- \
+     ci/gates/vulkan_mi25_smoke.sh --out <server out> --model "$MODEL_DEFAULT"      # exit 0
+   ```
+
+5. Suites. GPU. `ci/runner/run-suite.sh --suite <name> --out <server out>`, under the
+   lease. A skip is not a pass. Count every skip.
+
+6. Publish without repointing, then, after review, with `current`.
+   Run the script from the lane. Pass `--dest-root` so the build lands in the main
+   checkout, because a lane workspace is deleted by `gitman done`.
+
+   ```bash
+   ci/build/mode-a-server.sh --out <server out> --no-current --release --dest-root <main checkout>/ci/modea/server
+   ci/build/mode-a-server.sh --out <server out> --current   --release --dest-root <main checkout>/ci/modea/server
+   ```
+
+   The script refuses to replace the build that `current` names, and a build that
+   one of your processes maps or runs. A process of another user is not visible
+   to it. Check the router before you publish.
+   `modea-provenance.json` records the patch hash and a sha256 of every file
+   in `bin/` and `lib/`. A reader then proves the artefact with `sha256sum`.
+
+The wheel does not ship headers, so the bindgen pairs the wheel's lib with the
+server build's `include/` (the exact tree that produced the lib). The
+version tuple (`llama-cpp-python ref/commit`, anchor, built commit, build
+flags, ggml version) is recorded in `ci/build/modea-version-tuple.json` +
+`ci/build/vendor-manifest.json`; the `release-` tag names the anchor +
+featureset (e.g. `release-b10103-p2`).
+
+### CUDA commands (history)
+
+These ran on the earlier CUDA rig. Keep them for a CUDA machine only.
 
 ```bash
 WHEEL_LIB="ci/modea/.venv/lib/python3.13/site-packages/llama_cpp/lib"
 export LLAMA_CPP_LIB_PATH="$WHEEL_LIB"
 export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LLAMA_CPP_LIB_PATH:$(dirname $(gcc -print-file-name=libstdc++.so)):$(dirname $(gcc -print-file-name=libgomp.so))"
-export CUDA_VISIBLE_DEVICES=0
+export LLAMA_CI_GPU=0   # the gate pins every backend's device variable from this one
 ci/modea/.venv/bin/python ci/gates/abi_smoke_gate.py --model <any GGUF>           # exit 0
 ci/gates/.venv/bin/python ci/gates/cffi_bindgen.py \
   --lib-dir "$WHEEL_LIB" \
   --include-dir <integration build out>/include --profile p2fork --check           # exit 0
 ```
 
-The wheel does not ship headers, so the bindgen pairs the wheel's lib with the
-integration build's include/ (the exact tree that produced the lib). The
-version tuple (`llama-cpp-python ref/commit`, anchor, built commit, build
-flags, ggml version) is recorded in `ci/build/modea-version-tuple.json` +
-`ci/build/vendor-manifest.json`; the `release-` tag names the anchor +
-featureset (e.g. `release-b10103-p2`).
+For CUDA, build the wheel with `MODEA_BACKEND=cuda` (the default).
 
 ## Mode B does not apply to an executable — it cannot
 
@@ -104,9 +195,11 @@ services.inferference-server = {
 ```
 
 **The module holds no model path, no port, no adapter list and no card.** Those
-live in `~/.config/inferference/<role>.yaml` and are read by the unit **at
-start**, so changing a model or a pool is an edit plus `systemctl --user restart`
-and never a NixOS rebuild. Schema and commentary:
+live in `<config dir>/<role>.yaml` and are read by the unit **at
+start**. The launcher picks the config dir like `inferference-reconcile.py
+config-dir`: `$INFERFERENCE_CONFIG_DIR`, then `/etc/inferference` when it exists,
+then `~/.config/inferference` with a warning. So changing a model or a pool is an
+edit plus `systemctl --user restart` and never a NixOS rebuild. Schema and commentary:
 `ci/runner/server-role.example.yaml`.
 
 The card is not in either place: each role resolves its own from that role's
@@ -132,10 +225,12 @@ server on one card, and preemption is not implemented.
 
 ```bash
 # build the routed server from a gated commit …
-ci/build/build-llamacpp.sh --ref integration --profile p2fork-server
+ci/build/build-llamacpp.sh --ref integration --profile vulkan-mi25-p2fork-server
 # … then publish it out of the prunable build garage
-ci/build/mode-a-server.sh --out ci/build/.llamacpp-builds/out-p2fork-server-<sha>
+ci/build/mode-a-server.sh --out ci/build/.llamacpp-builds/out-vulkan-mi25-p2fork-server-<sha>[-residency-<hash>]
 ```
+
+On a CUDA host, use `--profile p2fork-server` and the out dir `out-p2fork-server-<sha>`.
 
 Layout, with `current` pointing at the newest published build:
 

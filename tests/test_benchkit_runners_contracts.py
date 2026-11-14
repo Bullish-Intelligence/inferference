@@ -39,15 +39,15 @@ def test_grammar_validate_classifies_json_and_schema() -> None:
 
 
 def test_baseline_key_is_deterministic_and_never_a_date() -> None:
-    key = baseline_key(_SAMPLE_MANIFEST, "json_workload")
-    assert key == "json_workload@97ad953ef-feature-a,p2-mixed-batch-lora"
-    assert baseline_key(_SAMPLE_MANIFEST, "json_workload") == key
+    key = baseline_key(_SAMPLE_MANIFEST, "json_workload", "vulkan")
+    assert key == "json_workload@97ad953ef-feature-a,p2-mixed-batch-lora@vulkan"
+    assert baseline_key(_SAMPLE_MANIFEST, "json_workload", "vulkan") == key
     # stock (features []) gets the "stock" featureset marker
-    stock_key = baseline_key({"llama_cpp_commit": "0ab9d6fed", "features": []}, "json_workload")
-    assert stock_key == "json_workload@0ab9d6fed-stock"
+    stock_key = baseline_key({"llama_cpp_commit": "0ab9d6fed", "features": []}, "json_workload", "vulkan")
+    assert stock_key == "json_workload@0ab9d6fed-stock@vulkan"
 
 
-def test_baseline_gate_compare_only_passes_without_baseline(tmp_path) -> None:
+def test_baseline_store_reports_a_missing_baseline(tmp_path) -> None:
     from inferference.benchkit.baselines import BaselineStore
 
     store = BaselineStore(tmp_path)
@@ -112,6 +112,8 @@ def test_runner_token_sorting_is_deterministic() -> None:
 def test_require_ci_device_refuses_wrong_device(monkeypatch) -> None:
     """Gate 4: a run on the wrong device is refused loudly, by name."""
     monkeypatch.setenv("LLAMA_CI_GPU", "0")
+    monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
     try:
         require_ci_device()
@@ -126,6 +128,8 @@ def test_require_ci_device_refuses_wrong_device(monkeypatch) -> None:
 
 def test_require_ci_device_accepts_ci_device(monkeypatch) -> None:
     monkeypatch.setenv("LLAMA_CI_GPU", "0")
+    monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     require_ci_device()  # must not raise
 

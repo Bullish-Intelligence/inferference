@@ -18,7 +18,7 @@ an earlier seq-reuse harness onto
 
 Success is deterministic greedy continuation equality only; ``set_data`` return
 values and byte counts are recorded but never treated as proof.
-GPU-only: CUDA_VISIBLE_DEVICES=0, n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
+GPU-only: one card pinned (LLAMA_CI_GPU), n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def main() -> int:
 
     h = SeqHarness(str(args.model), args.n_ctx, args.n_batch, args.seed)
     after_load = gpu_snapshot()
-    require_gpu0_only(after_load)
+    require_gpu0_only(after_load, before=gpu_before)
 
     toks = h.tokenize(b"Multi sequence router reuse workload. " * 60)
     pa, sa = toks[:24], [toks[24]]  # sequence A: a live neighbour

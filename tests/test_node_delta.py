@@ -11,13 +11,12 @@ is exercised without a GPU.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
 from inferference.fingerprint import ArtifactIdentity, LlamaEngineFingerprint
-from inferference.gpu_env import gpu_env_ready
+from inferference.gpu_env import GPU_BACKEND_LABEL, gpu_env_ready
 from inferference.node_blend_live import (
     PullInSpec,
     blend_by_reanchor,
@@ -42,6 +41,7 @@ from inferference.prefix_cache import (
     PrefixCacheKey,
 )
 from inferference.prefix_cache_live import InMemoryPrefixCache
+from tests.asset_paths import asset_path
 
 
 def _fingerprint(model_digest: str = "a" * 64) -> LlamaEngineFingerprint:
@@ -51,7 +51,7 @@ def _fingerprint(model_digest: str = "a" * 64) -> LlamaEngineFingerprint:
         tokenizer=artifact,
         llama_cpp_python_version="0.3.34",
         llama_cpp_commit="b10103",
-        backend="cuda",
+        backend=GPU_BACKEND_LABEL,
         n_ctx=2048,
     )
 
@@ -376,9 +376,9 @@ def test_blend_by_reanchor_is_stub_with_position_delta(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 # The rig's own model, never a model this repo names. $MODEL_DEFAULT is the
-# default role declared in ci/runner/rig-local.sh; an empty path simply does not
-# exist, so the test below skips rather than failing on someone else's machine.
-_MODEL_PATH = Path(os.environ.get("LLAMA_TEST_MODEL") or os.environ.get("MODEL_DEFAULT") or "")
+# default role declared in ci/runner/rig-local.sh; an unset variable gives a path
+# that cannot exist, so the test below skips rather than failing on someone else's machine.
+_MODEL_PATH = asset_path("MODEL_DEFAULT")
 
 
 def _gpu_ready() -> bool:
@@ -395,7 +395,7 @@ def _gpu_ready() -> bool:
     return True
 
 
-@pytest.mark.skipif(not _gpu_ready(), reason="requires GPU env (LLAMA_CPP_LIB_PATH, CUDA, model)")
+@pytest.mark.skipif(not _gpu_ready(), reason="requires GPU env (LLAMA_CPP_LIB_PATH, a GPU device, MODEL_DEFAULT)")
 def test_gpu_context_tree_reconstruct_and_blend_match_cold_prefill(tmp_path: Path) -> None:
     from llama_cpp import Llama, llama_cpp
 

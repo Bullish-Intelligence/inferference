@@ -7,7 +7,7 @@ gate any (model, adapter) pair can run is the right one, and this is an earlier
 `run_llama_arch.py` generalised into it.
 
 **What changed from run_llama_arch.py.** The model, the adapter directory and
-the two target blocks were module constants pinned to TinyLlama. They are
+the two target blocks were module constants pinned to one model. They are
 parameters now, and the block indices derive from the model's own GGUF instead
 of being written down (`arch_blocks`). Everything else is deliberately
 unchanged.
@@ -54,6 +54,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from inferference.gpu_env import VISIBLE_DEVICE_VARS
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 RIG_ENV = REPO / "ci" / "runner" / "rig-env.sh"
@@ -86,7 +88,7 @@ def arch_blocks(model: Path) -> dict[str, Any]:
     if not gguf_py.is_dir():
         gguf_py = REPO / "ci/build/.llamacpp-builds/src-llama.cpp/gguf-py"
     sys.path.insert(0, str(gguf_py))
-    from gguf import GGUFReader  # ty: ignore[unresolved-import]
+    from gguf import GGUFReader
 
     reader = GGUFReader(str(model))
     arch = reader.fields["general.architecture"].contents()
@@ -120,14 +122,14 @@ def arm_specs() -> list[dict[str, Any]]:
 
 
 def server_argv(binary: Path, model: Path, loras: list[Path], port: int, routing: bool) -> list[str]:
-    # THE CARD IS NAMED TWO DIFFERENT WAYS AND ONLY ONE WORKS PER BACKEND.
-    # launch() exports CUDA_VISIBLE_DEVICES, which is how a CUDA build is pinned.
-    # THE VULKAN BACKEND IGNORES IT ENTIRELY: a Vulkan server with
-    # CUDA_VISIBLE_DEVICES=1 still places the model on Vulkan0, so every arm
-    # would silently run on the wrong card — and on a rig whose other card is
-    # serving, that is an overcommit that spills to host RAM and still passes.
+    # EACH BACKEND READS ITS OWN DEVICE VARIABLE AND IGNORES THE OTHERS.
+    # launch() exports every variable in inferference.gpu_env.VISIBLE_DEVICE_VARS
+    # with the same card. A variable that the backend ignores does no harm. A
+    # variable that is left out would put every arm on the wrong card, and on a
+    # rig whose other card is serving, that is an overcommit that spills to host
+    # RAM and still passes.
     # $ROUTING_SMOKE_DEVICE names the device explicitly (e.g. "Vulkan1") and is
-    # passed through as --device. Unset keeps the CUDA behaviour unchanged.
+    # passed through as --device. Unset keeps the variable pin alone.
     argv = [
         str(binary),
         "-m", str(model),
@@ -159,10 +161,11 @@ def launch(argv: list[str], log: Path) -> subprocess.Popen[bytes]:
     if not gpu:
         raise SystemExit("LLAMA_CI_GPU is unset; source ci/runner/rig-env.sh")
     quoted = " ".join(f"'{a}'" for a in argv)
+    pins = "; ".join(f"export {var}='{gpu}'" for var in VISIBLE_DEVICE_VARS)
     log.parent.mkdir(parents=True, exist_ok=True)
     fh = log.open("wb")
     return subprocess.Popen(  # noqa: S603
-        ["bash", "-c", f"source '{RIG_ENV}'; export CUDA_VISIBLE_DEVICES='{gpu}'; exec {quoted}"],
+        ["bash", "-c", f"source '{RIG_ENV}'; {pins}; exec {quoted}"],
         stdout=fh,
         stderr=subprocess.STDOUT,
         start_new_session=True,
@@ -244,7 +247,7 @@ def run_arm(
                 # Recorded, never fatal: a chat-parser 500 lands here and the
                 # decode timings below are what decides the arm.
                 out["request"] = f"failed: {type(exc).__name__}: {exc}"
-            time.sleep(1.0)  # a CUDA abort can land while the response is in flight
+            time.sleep(1.0)  # an abort can land while the response is in flight
             out["alive_after_request"] = proc.poll() is None
         else:
             out["request"] = "not attempted"

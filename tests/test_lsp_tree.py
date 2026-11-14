@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from inferference.fingerprint import ArtifactIdentity, LlamaEngineFingerprint
+from inferference.gpu_env import GPU_BACKEND_LABEL
 from inferference.lsp_tree import (
     DEFINITION,
     REFERENCES,
@@ -45,7 +46,7 @@ def _fingerprint() -> LlamaEngineFingerprint:
         tokenizer=a,
         llama_cpp_python_version="0.3.34",
         llama_cpp_commit="b1",
-        backend="cuda",
+        backend=GPU_BACKEND_LABEL,
         n_ctx=2048,
     )
 

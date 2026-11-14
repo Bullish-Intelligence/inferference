@@ -3,7 +3,9 @@
   "llama_cpp_python_commit": "629bd1b333f60d24a01886c5f99019f4c7c3ea6c",
   "llama_cpp_anchor": "0ab9d6fed",
   "llama_cpp_built_commit": "ecc0cb0d34e17595ff0546b89c44fa100d076c0d",
-  "build_flags": "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86",
+  "vulkan_residency_patch_sha256": "08b5c579d8b17be88627dd6aa434a9bea49129e00f0af313287594628a5ec4a3",
+  "source_tree_sha256": "5b8f71bfbb19131551d7808680e9fd3e5863ea5bde1064291fd1215a86a88402",
+  "build_flags": "-DGGML_VULKAN=ON -DGGML_CUDA=OFF",
   "ggml_version": "libggml.so.0.18.0",
   "mode": "A"
 }

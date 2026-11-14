@@ -1,7 +1,7 @@
-"""Nanbeige arch-recognition gate for a fork lib (off-GPU, CPU-only load).
+"""Nanbeige-architecture recognition gate for a fork lib (off-GPU, CPU-only load).
 
 A fork lib built from a tree that contains the nanbeige arch feature must
-recognize Nanbeige GGUFs. This gate proves, fail-closed, against the lib on
+recognize GGUFs of that architecture. This gate proves, fail-closed, against the lib on
 LLAMA_CPP_LIB_PATH:
 
   1. the BUILT lib exports the nanbeige model machinery (mangled C++ symbols,
@@ -14,8 +14,8 @@ LLAMA_CPP_LIB_PATH:
      expanded to n_layer_phys * n_loops with shared physical weights).
 
 Exits 0 only if all four hold. GPU-free by design (n_gpu_layers=0); the model
-path is a Nanbeige4.2-3B GGUF from the machine's model inventory
-(`MODEL_NANBEIGE`, declared in `ci/runner/rig-local.sh`).
+path is a GGUF of the nanbeige architecture (22 blocks, 2 loops) from the
+machine's model inventory (`MODEL_NANBEIGE`, declared in `ci/runner/rig-local.sh`).
 """
 
 from __future__ import annotations

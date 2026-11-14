@@ -5,7 +5,18 @@
     "probe": "probes/capability.sh",
     "required": true
   },
-  "env": { "GPU": true, "MODEL": "Nanbeige4.2-3B-UD-Q4_K_XL.gguf", "LIB": true },
+  "env": {
+    "GPU": true,
+    "MODEL_ROLE": "nanbeige",
+    "MODEL_NEEDS": "a nanbeige-architecture GGUF and nanbeige LoRA probe adapters",
+    "MODEL_VARS": [
+      "MODEL_NANBEIGE_LORA_PROBE"
+    ],
+    "LIB": true,
+    "GPU_TESTS": [
+      "tests/test_hats_behavior_gpu.py"
+    ]
+  },
   "tests": [
     "tests/test_hats_binding.py",
     "tests/test_hats_behavior_gpu.py"

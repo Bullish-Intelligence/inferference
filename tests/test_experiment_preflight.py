@@ -55,6 +55,7 @@ from inferference.experiment.spec import (
 from inferference.pptable import PptThrottler, TempSensor
 from inferference.pptable import decode as pptable_decode
 from tests.pp_tables import synthetic_stock_blob
+from tests.test_experiment_control import make_cpu_root
 
 _STOCK_PP_TABLE_SHA256 = hashlib.sha256(synthetic_stock_blob()).hexdigest()
 
@@ -297,6 +298,54 @@ def test_check_workloads_refuses_a_bare_workload_name(tmp_path: Path) -> None:
     assert excinfo.value.passed == ()
 
 
+def test_check_workloads_refuses_an_unknown_corpus_set(tmp_path: Path) -> None:
+    paths, target, spec = _build_host(tmp_path)
+    spec = spec.model_copy(update={"workloads": ("corpus_no-such-family",)})
+
+    with pytest.raises(PreflightRefusal) as excinfo:
+        _preflight(paths, target, spec)
+
+    assert excinfo.value.check == "workloads"
+
+
+def test_check_workloads_accepts_a_corpus_set(tmp_path: Path) -> None:
+    paths, target, spec = _build_host(tmp_path)
+    spec = spec.model_copy(update={"workloads": ("corpus_all",)})
+
+    snapshot = _preflight(paths, target, spec)
+
+    assert snapshot.checks[0].observed == [{"name": "corpus_all", "kind": "corpus"}]
+
+
+def test_check_workloads_refuses_agent_turns_that_overflow_a_slot(tmp_path: Path) -> None:
+    paths, target, spec = _build_host(tmp_path)
+    spec = spec.model_copy(update={"workloads": ("agent_turns_2x4",)})
+
+    with pytest.raises(PreflightRefusal) as excinfo:
+        _preflight(paths, target, spec)
+
+    assert excinfo.value.check == "workloads"
+    assert "tokens_per_slot is 4096" in excinfo.value.detail
+    assert excinfo.value.passed == ()
+
+
+def test_check_workloads_lets_agent_turns_that_fit_a_slot_pass_the_check(tmp_path: Path) -> None:
+    paths, target, spec = _build_host(tmp_path)
+    context = spec.fixed.context.model_copy(update={"tokens_per_slot": 12000})
+    spec = spec.model_copy(
+        update={
+            "workloads": ("agent_turns_2x4",),
+            "fixed": spec.fixed.model_copy(update={"context": context}),
+        }
+    )
+
+    with pytest.raises(PreflightRefusal) as excinfo:
+        _preflight(paths, target, spec)
+
+    # The host fixture declares 4096 tokens per lane, so a later check refuses.
+    assert excinfo.value.check != "workloads"
+
+
 def test_check_host_load_refuses_above_the_declared_limit(tmp_path: Path) -> None:
     paths, target, spec = _build_host(tmp_path)
     paths.loadavg.write_text("9.50 8.00 7.00 3/400 99999\n")
@@ -510,7 +559,7 @@ def _power_cap_spec(spec: ExperimentSpec, watts: int) -> ExperimentSpec:
 
 
 def _patched_kernel_host(tmp_path: Path, watts: int = 220) -> tuple[HostPaths, RunTarget, ExperimentSpec]:
-    """The base host, but with the patched kernel's floor and the owner's cap write."""
+    """The base host, but with the patched kernel's floor and the operator's cap write."""
     paths, target, spec = _build_host(tmp_path)
     (_card_hwmon(paths) / "power1_cap_min").write_text("120000000\n")
     (_card_hwmon(paths) / "power1_cap").write_text(f"{watts * 1_000_000}\n")
@@ -625,6 +674,45 @@ def test_check_power_profile_checks_cards_outside_the_model_placement(tmp_path: 
         _preflight(paths, target, spec)
 
     assert excinfo.value.check == "power_profile"
+
+
+def _with_cpu_epp(paths: HostPaths, spec: ExperimentSpec, cpu_root: Path, cpu_epp: str | None):
+    host = HostFixed(loadavg_1m_max=spec.fixed.host.loadavg_1m_max, cpu_epp=cpu_epp)
+    fixed = spec.fixed.model_copy(update={"host": host})
+    return dataclasses.replace(paths, cpu_root=cpu_root), spec.model_copy(update={"fixed": fixed})
+
+
+def test_check_cpu_epp_passes_and_records_the_state_when_the_spec_declares_it(tmp_path: Path) -> None:
+    paths, target, spec = _build_host(tmp_path)
+    paths, spec = _with_cpu_epp(paths, spec, make_cpu_root(tmp_path / "cpu", epp="performance"), "performance")
+
+    snapshot = _preflight(paths, target, spec)
+
+    names = [check.name for check in snapshot.checks]
+    assert names.index("cpu_epp") == names.index("power_profile") + 1
+    observed = next(check.observed for check in snapshot.checks if check.name == "cpu_epp")
+    assert observed["declared"] == "performance"
+    assert observed["state"]["epp"] == {"0": "performance", "1": "performance"}
+
+
+def test_check_cpu_epp_refuses_a_mismatch(tmp_path: Path) -> None:
+    paths, target, spec = _build_host(tmp_path)
+    paths, spec = _with_cpu_epp(paths, spec, make_cpu_root(tmp_path / "cpu", epp="balance_performance"), "performance")
+
+    with pytest.raises(PreflightRefusal) as excinfo:
+        _preflight(paths, target, spec)
+
+    assert excinfo.value.check == "cpu_epp"
+    assert "power_profile" in [check.name for check in excinfo.value.passed]
+
+
+def test_check_cpu_epp_is_not_run_when_the_spec_does_not_declare_it(tmp_path: Path) -> None:
+    paths, target, spec = _build_host(tmp_path)
+    paths = dataclasses.replace(paths, cpu_root=tmp_path / "no-such-cpu-root")
+
+    snapshot = _preflight(paths, target, spec)
+
+    assert "cpu_epp" not in [check.name for check in snapshot.checks]
 
 
 def test_check_fan_watchdog_refuses_when_its_unit_is_not_active(tmp_path: Path) -> None:

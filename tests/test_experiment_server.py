@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 import time
 from pathlib import Path
 
@@ -20,9 +21,11 @@ from inferference.experiment.server import (
     ServerProcess,
     build_command,
     list_devices,
+    merge_extra_args,
     wait_for_bindable_port,
 )
 
+_PATH = {"PATH": os.environ["PATH"]}
 FAKE_SERVER = Path(__file__).parent / "fixtures" / "experiment" / "fake_llama_server.py"
 
 
@@ -142,6 +145,97 @@ def test_build_command_refuses_extra_args_key_collision() -> None:
         )
 
 
+def _command_with_extra_args(extra_args: dict[str, str]):
+    return build_command(
+        server_bin=Path("/opt/llama-server"),
+        model=Path("/models/model.gguf"),
+        alias="test-alias",
+        card=0,
+        port=8080,
+        slots=1,
+        tokens_per_slot=1024,
+        batch=256,
+        ubatch=256,
+        cache_k="q8_0",
+        cache_v="q8_0",
+        extra_args=extra_args,
+        wrapper=(),
+        base_env={},
+        fan_status_file=Path("/run/arctic-fan/status"),
+    )
+
+
+@pytest.mark.parametrize("key", ["port=1", "threads=2", "--port=1"])
+def test_build_command_refuses_an_extra_args_key_with_equals(key: str) -> None:
+    with pytest.raises(ServerError, match="="):
+        _command_with_extra_args({key: "1"})
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "gpu-layers",
+        "ngl",
+        "main-gpu",
+        "tensor-split",
+        "n-cpu-moe",
+        "cpu-moe",
+        "override-tensor",
+        "n_gpu_layers",
+        "--ngl",
+        "GPU-Layers",
+    ],
+)
+def test_build_command_refuses_an_alias_of_a_fixed_flag(key: str) -> None:
+    with pytest.raises(ServerError, match="already sets"):
+        _command_with_extra_args({key: "0"})
+
+
+def test_build_command_keeps_n_gpu_layers_999_and_passes_a_plain_flag() -> None:
+    command = _command_with_extra_args({"threads": "2"})
+
+    assert command.argv[command.argv.index("--n-gpu-layers") + 1] == "999"
+    assert command.argv[-2:] == ("--threads", "2")
+
+
+def test_merge_extra_args_joins_model_and_spec_flags() -> None:
+    merged = merge_extra_args({"threads": "2"}, {"spec-type": "ngram-mod"})
+
+    assert merged == {"threads": "2", "spec-type": "ngram-mod"}
+
+
+def test_merge_extra_args_keeps_a_key_that_both_sides_set_to_one_value() -> None:
+    assert merge_extra_args({"threads": "2"}, {"threads": "2"}) == {"threads": "2"}
+
+
+def test_merge_extra_args_refuses_a_key_with_two_values() -> None:
+    with pytest.raises(ServerError, match="threads"):
+        merge_extra_args({"threads": "2"}, {"threads": "4"})
+
+
+def test_merged_extra_args_still_refuse_a_flag_the_command_sets() -> None:
+    merged = merge_extra_args({}, {"ctx-size": "1"})
+
+    with pytest.raises(ServerError, match="ctx-size"):
+        build_command(
+            server_bin=Path("/opt/llama-server"),
+            model=Path("/models/model.gguf"),
+            alias="test-alias",
+            card=0,
+            port=8080,
+            slots=1,
+            tokens_per_slot=1024,
+            batch=256,
+            ubatch=256,
+            cache_k="q8_0",
+            cache_v="q8_0",
+            extra_args=merged,
+            wrapper=(),
+            base_env={},
+            fan_status_file=Path("/run/arctic-fan/status"),
+        )
+
+
 # -- build_command: preserve the inherited machine limit ----------------------
 
 
@@ -192,24 +286,41 @@ def test_build_command_env_holds_no_thermal_max_c_even_when_base_env_lacks_it() 
     assert "GPU_THERMAL_MAX_C" not in command.env
 
 
-def test_list_devices_preserves_inherited_thermal_max_c(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, str] = {}
+def _device_script(tmp_path: Path, body: str) -> Path:
+    script = tmp_path / "fake-list-devices.sh"
+    script.write_text(f"#!/usr/bin/env bash\n{body}\n")
+    script.chmod(0o755)
+    return script
 
-    class _Completed:
-        returncode = 0
-        stdout = "Available devices:\n  Vulkan0: test device\n"
-        stderr = ""
 
-    def fake_run(*args, **kwargs):
-        captured.update(kwargs["env"])
-        return _Completed()
+def test_list_devices_preserves_inherited_thermal_max_c(tmp_path: Path) -> None:
+    script = _device_script(
+        tmp_path, 'echo "Available devices:"; echo "max=$GPU_THERMAL_MAX_C vk=$GGML_VK_VISIBLE_DEVICES" >&2'
+    )
 
-    monkeypatch.setattr("inferference.experiment.server.subprocess.run", fake_run)
+    text = list_devices(script, card=1, base_env={**_PATH, "GPU_THERMAL_MAX_C": "95"})
 
-    list_devices(Path("/fake/server"), card=1, base_env={"GPU_THERMAL_MAX_C": "95"})
+    assert "Available devices:" in text
+    assert "max=95 vk=1" in text
 
-    assert captured["GPU_THERMAL_MAX_C"] == "95"
-    assert captured["GGML_VK_VISIBLE_DEVICES"] == "1"
+
+def test_list_devices_stops_at_once_when_a_stop_is_requested(tmp_path: Path) -> None:
+    script = _device_script(tmp_path, "sleep 30")
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+
+    started = time.monotonic()
+    with pytest.raises(ServerError, match="stop request"):
+        list_devices(script, card=0, base_env=_PATH, timeout_s=30, stop=stop, poll_s=0.05)
+
+    assert time.monotonic() - started < 5
+
+
+def test_list_devices_still_times_out(tmp_path: Path) -> None:
+    script = _device_script(tmp_path, "sleep 30")
+
+    with pytest.raises(ServerError, match="did not exit"):
+        list_devices(script, card=0, base_env=_PATH, timeout_s=0.3, poll_s=0.05)
 
 
 # -- ServerProcess: healthy start -----------------------------------------------
@@ -289,3 +400,54 @@ def test_wait_for_bindable_port_blocks_during_time_wait() -> None:
         wait_for_bindable_port(port, timeout_s=1.0, poll_s=0.1)
     elapsed = time.monotonic() - started
     assert elapsed >= 0.9
+
+
+def test_wait_for_bindable_port_ends_when_a_stop_is_requested() -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    try:
+        started = time.monotonic()
+        with pytest.raises(ServerError, match="stop request"):
+            wait_for_bindable_port(port, timeout_s=60, poll_s=0.1, stop=stop)
+        assert time.monotonic() - started < 5
+    finally:
+        listener.close()
+
+
+@pytest.mark.parametrize("name", ["GGML_VK_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"])
+def test_build_command_pins_the_card_on_every_backend_variable(name: str) -> None:
+    command = build_command(
+        server_bin=Path("/opt/llama-server"),
+        model=Path("/models/model.gguf"),
+        alias="test-alias",
+        card=1,
+        port=8080,
+        slots=1,
+        tokens_per_slot=1024,
+        batch=256,
+        ubatch=256,
+        cache_k="q8_0",
+        cache_v="q8_0",
+        extra_args={},
+        wrapper=(),
+        base_env={"CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "0", "PATH": "/usr/bin"},
+        fan_status_file=Path("/run/arctic-fan/status"),
+    )
+
+    assert command.env[name] == "1"
+
+
+def test_list_devices_pins_the_card_on_every_backend_variable(tmp_path: Path) -> None:
+    script = _device_script(
+        tmp_path,
+        'echo "Available devices:"; '
+        'echo "vk=$GGML_VK_VISIBLE_DEVICES cuda=$CUDA_VISIBLE_DEVICES hip=$HIP_VISIBLE_DEVICES" >&2',
+    )
+
+    text = list_devices(script, card=1, base_env={**_PATH, "CUDA_VISIBLE_DEVICES": "0"})
+
+    assert "vk=1 cuda=1 hip=1" in text

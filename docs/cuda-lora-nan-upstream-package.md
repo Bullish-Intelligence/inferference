@@ -6,16 +6,15 @@
 > shapes". Removing them would weaken the report. Nothing here describes how the
 > platform works or what it is for.
 
-**Update (2026-08-03, session 002):** the fix is now implemented, stress-tested,
-and merged on our fork: `upstream-candidate/cuda-lora-nan-fix` @ `04a8cc3aa`
-(merged into `integration` as `24c5d3dbc`). This package is the owner's filing
-material — the branch + evidence, ready to push and file under the owner's
-ownership (upstream's AGENTS.md forbids AI-authored upstream contribution; an
-AI session never pushes upstream).
+**Update (2026-08-03):** the fix is now implemented, stress-tested, and merged
+on our fork: `upstream-candidate/cuda-lora-nan-fix` @ `04a8cc3aa` (merged into
+`integration` as `24c5d3dbc`). This package is the filing material: the branch
+and the evidence. A person files it upstream under their own authorship
+(upstream's AGENTS.md forbids AI-authored upstream contribution).
 
-**Prepared as a FILE for the owner to file upstream.** Nothing in this repo is
-pushed to `ggml-org/llama.cpp`. The owner reviews, trims, and files this under
-their own authorship.
+**This is a file for a person to file upstream.** Nothing in this repository is
+pushed to `ggml-org/llama.cpp`. The person who files it reviews and trims it
+first.
 
 ## Summary
 
@@ -31,8 +30,9 @@ graph-count-dependent, and affects both tested anchors (b10103, b10233).
 1. Build any recent llama.cpp with CUDA (reproduced on b10103 `c588c4f47` and
    b10233 `0ab9d6fed`; kernel line identical in both).
 2. Load a quantized model whose arch has an ffn with a large inter-dim
-   (reproduced on Nanbeige4.2-3B, 22 layers × ffn_up/gate [3072, 10752], and
-   on Ornith-1.0-9B (qwen35), 32 layers × ffn_up/gate [4096, 12288]).
+   (reproduced on a nanbeige-architecture model, 22 layers × ffn_up/gate
+   [3072, 10752], and on a qwen35-architecture model, 32 layers × ffn_up/gate
+   [4096, 12288]).
 3. Apply a synthetic full-coverage LoRA: every layer, `ffn_up` + `ffn_gate`
    pairs, rank 16, `alpha = 64` (effective scale 4.0 per pair), weights
    `~N(0,1)` (the committed synthesizer
@@ -113,15 +113,15 @@ broken; bf16 would be a healthy-path precision regression; clamp is wrong.
 **Validation (full battery green, merged integration `24c5d3dbc`):**
 
 - Reproducer clean on all trigger adapters (nanbeige probe-a/upgate-L22,
-  Ornith) — was all-NaN (166144) — GPU, batch-1 and MMQ batch-64, with and
+  qwen35) — was all-NaN (166144) — GPU, batch-1 and MMQ batch-64, with and
   without `CUDA_LAUNCH_BLOCKING=1`.
 - First-token logits finite, argmax == CPU, `max|gpu−cpu| = 0.226`.
 - Applies cleanly to current `upstream/master` (`ee0445c99`); a pure-stock
-  build of master+patch runs the reproducer clean (nanbeige + Ornith).
+  build of master+patch runs the reproducer clean (nanbeige + qwen35).
 - Bindgen tripwire green (full cdef), ABI smoke PASS, suites PASS
-  (p2 17/17, hats 6/6, router 4/4, prefix-cache 2/2, nanbeige), `testee
-  verify` green, bench cells green, p2_throughput 69.8 tps vs 64.8 (step-5)
-  — same band.
+  (p2 17/17, hats 6/6, router 4/4, prefix-cache 2/2, nanbeige), the
+  repository gate green, bench cells green, p2_throughput 69.8 tps vs 64.8
+  (earlier baseline) — same band.
 
 The kernel lines cited above are byte-identical between b10233 (`0ab9d6fed`)
 and current upstream master — the bug is open upstream, and this patch is the

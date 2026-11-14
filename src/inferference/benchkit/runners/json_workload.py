@@ -7,7 +7,7 @@ directly — no script-directory reach-in, no bare local ``workload`` import.
 Preserved semantics:
 
   * GPU-0-only isolation (``require_gpu0_only``) before and after model load;
-  * CUDA_VISIBLE_DEVICES=0 + LLAMA_CPP_LIB_PATH hard requirement at entry;
+  * one pinned card (LLAMA_CI_GPU) + LLAMA_CPP_LIB_PATH hard requirement at entry;
   * records v1 via ``write_benchmark_record`` + the aggregate summary shape
     (``aggregate_outcomes``);
   * torch sync is hard-required;
@@ -30,11 +30,12 @@ from typing import Any
 from inferference.benchmark import write_benchmark_record
 from inferference.diagnostics import collect_runtime_diagnostics
 from inferference.fingerprint import LlamaEngineFingerprint, register_artifact
+from inferference.gpu_env import VISIBLE_DEVICE_VARS, lib_backend_label
 from inferference.grammar import JsonSchemaGrammar
 
 from ..env import driver_version, gpu_snapshot, require_ci_device, require_gpu0_only
 from ..envelope import RunEnvelope
-from ..gates import _model_for_schema, _resolve_tokenizer, aggregate_outcomes, run_once
+from ..gates import _model_for_schema, _resolve_tokenizer, aggregate_outcomes, load_tokenizer, run_once
 from ..runenv import RunContext
 from ..workload import load as load_workload
 
@@ -94,12 +95,10 @@ def main() -> int:
     load_wall_ns = perf_counter_ns() - load_started
     after_load = gpu_snapshot()
     (run.dir / "gpu-after-load.json").write_text(json.dumps(after_load, indent=2) + "\n")
-    require_gpu0_only(after_load)
+    require_gpu0_only(after_load, before=gpu_before)
 
     tokenizer_path = _resolve_tokenizer(args.tokenizer, allow_network=False)
-    from transformers import AutoTokenizer  # noqa: PLC0415
-
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    tokenizer = load_tokenizer(tokenizer_path)
     grammars: dict[str, JsonSchemaGrammar] = {}
     compile_ns: dict[str, int] = {}
     if not args.baseline_only:
@@ -184,7 +183,7 @@ def main() -> int:
             llama_cpp_commit=runtime.get("llama_cpp_commit"),
             llama_cpp_build_id=runtime.get("llama_cpp_build_id"),
             seq_adapter_routing=bool(runtime.get("seq_adapter_routing")),
-            backend="cuda",
+            backend=lib_backend_label(),
             n_ctx=args.n_ctx,
         )
         fingerprint_key = fingerprint.cache_key()
@@ -205,7 +204,7 @@ def main() -> int:
                 "gpu_after_load": after_load.get("stdout"),
             },
             "env": {
-                "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                **{var: os.environ.get(var) for var in VISIBLE_DEVICE_VARS},
                 "LLAMA_CPP_LIB_PATH": os.environ.get("LLAMA_CPP_LIB_PATH"),
             },
         },

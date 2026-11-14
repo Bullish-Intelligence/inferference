@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Prefix-cache suite capability probe: does the pointed-at lib (1) load,
-# (2) support GPU offload, and are the rig assets present (Ornith model)?
+# (2) support GPU offload, and are the rig assets present (default-role model)?
 #
-# Library-mechanism gate: on the integration CUDA build it must PASS (RUN); on
+# Library-mechanism gate: on the integration GPU build it must PASS (RUN); on
 # a CPU stock build it FAILs and the suite SKIPs via skip_on_stock (the canary's
-# stock build is CPU-only and cannot exercise CUDA decode gates).
+# stock build is CPU-only and cannot exercise GPU decode gates).
 #
 # Usage: probes/capability.sh [<lib-dir>]   (default: $LLAMA_CPP_LIB_PATH)
 set -euo pipefail
@@ -31,7 +31,8 @@ def _required(name: str) -> Path:
     if not value:
         print(
             f"!! prefix-cache probe: {name} is not set; source ci/runner/rig-env.sh "
-            "(roles come from the untracked ci/runner/rig-local.sh)",
+            "(declare the model role in the untracked ci/runner/rig-local.sh; "
+            "see ci/runner/rig-local.example.sh)",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -48,7 +49,7 @@ if not llama_cpp.llama_cpp.llama_supports_gpu_offload():
     print(">> [prefix-cache probe] ABSENT: lib has no GPU offload (CPU build) — suite skips on stock")
     sys.exit(1)
 
-model = _required("MODEL_ORNITH")
+model = _required("MODEL_DEFAULT")
 if not model.exists():
     print(f"!! prefix-cache probe: missing model {model}", file=sys.stderr)
     sys.exit(1)

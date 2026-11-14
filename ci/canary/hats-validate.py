@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Task 3 Q6 — the deferred GPU validation, now on stock's nanbeige.
+"""The GPU validation of hats and seq-routing on the stock nanbeige architecture.
 
-Runs the S2 / S3 / S5 assertions that the
-step-3 spike deferred, per the token-exact rules (batch-1 ground truth +
+Runs the S2 / S3 / S5 assertions, per the token-exact rules (batch-1 ground truth +
 known-flip reporting):
 
 * S2 — continuation-equivalence: the hats branch with NO hat active must equal
@@ -120,6 +119,7 @@ def run_s2(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 _S3_CODE = r"""
 import os, json, sys
+from inferference.gpu_env import lib_backend_label
 from inferference.models import EngineConfig
 from inferference.router import AdapterSpec, MultiLoRARouter, RouteRequest, RouterConfig
 from inferference.seq_routing import library_supports_seq_routing
@@ -146,7 +146,9 @@ reqs = [RouteRequest(prompt=p, adapter=a, max_tokens=24) for a, p in WORKLOAD]
 
 def router(backend):
     return MultiLoRARouter(RouterConfig(
-        engine=EngineConfig(model_path=MODEL, n_ctx=512, n_gpu_layers=-1, n_batch=128, seed=17018, backend="cuda"),
+        engine=EngineConfig(
+            model_path=MODEL, n_ctx=512, n_gpu_layers=-1, n_batch=128, seed=17018, backend=lib_backend_label(),
+        ),
         adapters=(AdapterSpec(name="a", gguf_path=LORA_A), AdapterSpec(name="b", gguf_path=LORA_B)),
         n_seq_max=4, include_base=True, backend=backend,
     ))
@@ -276,6 +278,15 @@ def init_adapter(path):
     p = lib.llama_adapter_lora_init(llm._model.model, path.encode())
     assert p, f"adapter init failed: {path}"
     return p
+
+# This block loads the adapters itself, so MultiLoRARouter does not check them. The loop pool
+# is the seq_loras pool: it has the same two gaps as seq_routed. Run both refusals here.
+from inferference.seq_adapter_coverage import refuse_dropped_adapters
+from inferference.tied_head_adapter import refuse_tied_head_adapters
+
+_pool = [("lora-a", LORA_A), ("lora-b", LORA_B)] + ([("lora-identity", LORA_ID)] if LORA_ID else [])
+refuse_tied_head_adapters(MODEL, _pool)
+refuse_dropped_adapters(_pool)
 
 llm = Llama(model_path=MODEL, n_ctx=512, n_gpu_layers=-1, verbose=False)
 ctx = llm._ctx.ctx

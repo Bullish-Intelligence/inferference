@@ -1,18 +1,18 @@
 # Act configuration for the rig.
 #
 # Everything runs on the host — the rig IS the CI runner. All runner labels
-# (including the GPU labels [self-hosted, cuda, rtx3060]) are mapped to Act's
+# (including the GPU labels [self-hosted, gpu, vulkan]) are mapped to Act's
 # host-runner pseudo-image `-self-hosted` so Act executes the job steps directly
-# in the devenv shell that launched `act` (no containers: the CUDA toolkit, the
-# GPUs, the model cache, and the nix libcuda-first LD_LIBRARY_PATH are all
+# in the devenv shell that launched `act` (no containers: the Vulkan driver, the
+# GPUs, the model cache, and the LD_LIBRARY_PATH are all
 # host-local). The workflow steps source ci/runner/rig-env.sh for the rig facts
-# (model paths, CCACHE_DIR, LD_LIBRARY_PATH, NIXPKGS_ALLOW_UNFREE, GPU 0 pin).
+# (model paths, CCACHE_DIR, LD_LIBRARY_PATH, device pin).
 #
 # Run from the repo root inside the devenv shell:
 #   NIXPKGS_ALLOW_UNFREE=1 devenv shell -- act -l
 --workflows=ci/workflows
 -P ubuntu-latest=-self-hosted
 -P self-hosted=-self-hosted
--P cuda=-self-hosted
--P rtx3060=-self-hosted
+-P gpu=-self-hosted
+-P vulkan=-self-hosted
 -P cpu=-self-hosted

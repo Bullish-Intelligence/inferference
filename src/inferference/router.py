@@ -18,6 +18,7 @@ an earlier internal harness tree; this module is the teaching-quality library fo
 
 from __future__ import annotations
 
+import copy
 import ctypes
 import json
 from collections.abc import Sequence
@@ -32,7 +33,9 @@ from .decode import FINISH_LENGTH, FINISH_STOP
 from .grammar import JsonSchemaGrammar, apply_packed_bitmask_inplace
 from .models import EngineConfig, GenerationResult
 from .prefix_cache_live import LlamaSeqStateBridge
+from .seq_adapter_coverage import refuse_dropped_adapters
 from .seq_routing import NO_ADAPTER, SeqRoutingBinding, SeqRoutingUnavailable
+from .tied_head_adapter import refuse_tied_head_adapters
 
 BASE: None = None  # sentinel adapter name meaning "no adapter / raw base model"
 
@@ -63,10 +66,20 @@ class RouterConfig(_BoundaryModel):
     * ``seq_routed`` — the P2 fork's true mixed-batch path: one context, the ordered
       adapter pool registered once, each sequence assigned its adapter, a single
       ``llama_decode`` carrying the mix. Requires a fork lib; raises at construction
-      if the capability is absent (explicit opt-in).
+      if the capability is absent (explicit opt-in). It also raises
+      :class:`~inferference.seq_adapter_coverage.SeqRoutedAdapterRefused` for an
+      adapter that targets the token embedding or the MoE expert matrices: this
+      path would drop those parts without a message.
     * ``auto`` (default) — ``seq_routed`` when the loaded lib reports the routing
       capability, else ``context_pool``. Fail-closed: a stock lib silently uses the
-      context-pool path; missing capability is never an inference failure.
+      context-pool path; missing capability is never an inference failure. When
+      ``auto`` resolves to ``seq_routed``, the adapter refusal above applies; set
+      ``context_pool`` to serve such an adapter.
+
+    Every backend raises :class:`~inferference.tied_head_adapter.TiedHeadAdapterRefused`
+    for an adapter on ``token_embd.weight`` when the base model ties its output head:
+    the process would abort at the first decode. This refusal has no override and no
+    backend that avoids it.
     """
 
     engine: EngineConfig
@@ -95,6 +108,10 @@ class RouteRequest(_BoundaryModel):
     top_p: float | None = Field(default=None, gt=0.0, le=1.0)
     top_k: int | None = Field(default=None, gt=0)
     seed: int | None = None
+    # Grammar-constrained runs only. False (default) forces compact JSON. True lets
+    # the model emit whitespace between JSON elements, bounded per place by
+    # ``grammar.MAX_WHITESPACE_CNT``. An unconstrained run ignores it.
+    allow_whitespace: bool = False
 
 
 def request_uses_sampling(
@@ -189,6 +206,19 @@ class MultiLoRARouter:
 
         self.config = config
         self.C = llama_cpp
+        # ---- backend selection (fail-closed) ----
+        # ``auto`` uses the fork path only when the loaded lib exports it; ``seq_routed``
+        # is an explicit opt-in that raises here if the fork is absent; ``context_pool``
+        # never touches the fork surface. Resolved before the model loads, so a refusal
+        # below costs no VRAM.
+        self.backend = self._resolve_backend(config.backend)
+        # Every backend: an adapter on token_embd.weight aborts the process when the base
+        # model ties its output head. Refuse it now; there is no override.
+        refuse_tied_head_adapters(config.engine.model_path, ((s.name, s.gguf_path) for s in config.adapters))
+        if self.backend == "seq_routed":
+            # seq_routed drops the token-embedding and MoE-expert parts of an adapter
+            # without a message. Refuse such an adapter now; there is no override.
+            refuse_dropped_adapters((s.name, s.gguf_path) for s in config.adapters)
         eng = config.engine
         self.n_seq_max = config.n_seq_max
         self.n_batch = eng.n_batch
@@ -212,12 +242,6 @@ class MultiLoRARouter:
             self._adapter_ptr[spec.name] = ptr
         self._scale = {s.name: s.scale for s in config.adapters}
 
-        # ---- backend selection (fail-closed) ----
-        # ``auto`` uses the fork path only when the loaded lib exports it; ``seq_routed``
-        # is an explicit opt-in that raises here if the fork is absent; ``context_pool``
-        # never touches the fork surface.
-        self.backend = self._resolve_backend(config.backend)
-
         self._seq_binding: SeqRoutingBinding | None = None
         self._seq_ctx: Any = None
         # Ordered adapter pool: pool index == routing id. Fixed at construction so a
@@ -236,7 +260,9 @@ class MultiLoRARouter:
             # (a multi-GB GPU allocation on a 12 GB rig).
             self.llm.close()
             raise
-        self._grammar: JsonSchemaGrammar | None = None
+        self._grammar: JsonSchemaGrammar | None = None  # compact grammar (the default)
+        self._grammar_schema: dict[str, Any] | None = None  # the router's own copy
+        self._grammar_whitespace: JsonSchemaGrammar | None = None  # compiled on first use
         # Lazy per-request sampler scratch buffers (allocated only when a request
         # asks for sampling — greedy routers never touch this).
         self._candidate_type: Any | None = None
@@ -337,13 +363,52 @@ class MultiLoRARouter:
             raise RuntimeError("llama_set_adapters_lora failed")
 
     def enable_grammar(self, tokenizer: Any, schema: dict[str, Any]) -> None:
-        """Compile a JSON-schema grammar; constrained runs mask to it per sequence."""
+        """Compile a JSON-schema grammar; constrained runs mask to it per sequence.
+
+        The compact grammar compiles now. The whitespace grammar compiles on the
+        first request with ``allow_whitespace=True``, with the compiler of the compact
+        grammar. The router keeps its own copy of ``schema``: a later change to the
+        caller's dict does not change the whitespace grammar.
+        """
+        schema = copy.deepcopy(schema)
         self._grammar = JsonSchemaGrammar.from_huggingface(tokenizer, schema, vocab_size=self.n_vocab)
+        self._grammar_schema = schema
+        self._grammar_whitespace = None
+
+    def _grammar_for(self, request: RouteRequest) -> JsonSchemaGrammar:
+        """Return the compiled grammar that matches the request's whitespace option."""
+        if self._grammar is None or self._grammar_schema is None:
+            raise RuntimeError("a constrained request requires enable_grammar(...) first")
+        if not request.allow_whitespace:
+            return self._grammar
+        if self._grammar_whitespace is None:
+            self._grammar_whitespace = self._grammar.with_whitespace(
+                copy.deepcopy(self._grammar_schema), allow_whitespace=True
+            )
+        return self._grammar_whitespace
 
     # ---- decode primitives (plain tokens / numpy on the hot path) ----
 
     def _seq_rm(self, ctx: Any, seq_id: int) -> None:
         self.C.llama_memory_seq_rm(self.C.llama_get_memory(ctx), seq_id, -1, -1)
+
+    def reset_state(self) -> None:
+        """Clear the KV memory of every context, data included.
+
+        The caller must be idle: call this only when no ``run``, ``run_cached`` or
+        ``run_stream`` is in progress on this router. The call is not safe against a
+        running decode.
+
+        A wave removes only its own sequences. Sequences of an earlier wave stay in the
+        unified KV cache, and they set where the next sequence lands and how many cells
+        attention reads. On a Vulkan build that changes the logits. A gate that compares
+        two runs calls this before each run, so both start from the same state.
+        """
+        contexts = list(self._ctx.values())
+        if self._seq_ctx is not None:
+            contexts.append(self._seq_ctx)
+        for ctx in contexts:
+            self.C.llama_memory_clear(self.C.llama_get_memory(ctx), True)
 
     def _prefill(self, ctx: Any, tokens: list[int], seq_id: int) -> None:
         n = len(tokens)
@@ -601,7 +666,7 @@ class MultiLoRARouter:
             for w in range(0, len(idxs), self.n_seq_max):
                 wave = idxs[w : w + self.n_seq_max]
                 prompts = [self.tokenize(requests[j].prompt) for j in wave]
-                matchers = [self._grammar.new_matcher() for _ in wave] if constrained else None
+                matchers = [self._grammar_for(requests[j]).new_matcher() for j in wave] if constrained else None
                 samplers = [self._build_sampler(requests[j]) for j in wave]
                 gen = self._generate_wave(ctx, prompts, max(requests[j].max_tokens for j in wave), matchers, samplers)
                 for slot, j in enumerate(wave):
@@ -624,7 +689,7 @@ class MultiLoRARouter:
                 idx = NO_ADAPTER if r.adapter is BASE else self._seq_index[r.adapter]
                 self._seq_binding.set_seq_adapter(ctx, i, idx)
             prompts = [self.tokenize(r.prompt) for r in wave]
-            matchers = [self._grammar.new_matcher() for _ in wave] if constrained else None
+            matchers = [self._grammar_for(r).new_matcher() for r in wave] if constrained else None
             samplers = [self._build_sampler(r) for r in wave]
             gen = self._generate_wave(ctx, prompts, max(r.max_tokens for r in wave), matchers, samplers)
             for i, r in enumerate(wave):
@@ -668,7 +733,7 @@ class MultiLoRARouter:
         else:
             ctx = self._ctx[request.adapter]
         prompts = [self.tokenize(request.prompt)]
-        matchers = [self._grammar.new_matcher()] if constrained else None
+        matchers = [self._grammar_for(request).new_matcher()] if constrained else None
         samplers = [self._build_sampler(request)]
         inner = self._iter_wave(ctx, prompts, request.max_tokens, matchers, samplers)
         try:
@@ -808,8 +873,8 @@ class MultiLoRARouter:
                 wave = idxs[w : w + self.n_seq_max]
                 suffixes = [self.tokenize_suffix(requests[j].prompt) for j in wave]
                 max_tokens = max(requests[j].max_tokens for j in wave)
-                matchers_c = [self._grammar.new_matcher() for _ in wave] if constrained else None
-                matchers_cold = [self._grammar.new_matcher() for _ in wave] if constrained else None
+                matchers_c = [self._grammar_for(requests[j]).new_matcher() for j in wave] if constrained else None
+                matchers_cold = [self._grammar_for(requests[j]).new_matcher() for j in wave] if constrained else None
                 fulls = [prefix + s for s in suffixes]
 
                 self.C.llama_synchronize(ctx)

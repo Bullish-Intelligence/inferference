@@ -3,7 +3,7 @@
 No native library or GPU: these cover the capability-aware fingerprint key, the
 ``SeqRoutingBinding`` capability guard, the fail-closed ``auto`` backend selection,
 and the boundary surface of the seq-routing config. The token-exact GPU gate lives
-in ``test_seq_routing_gpu.py`` behind the CUDA facility.
+in ``test_seq_routing_gpu.py`` behind the GPU env.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import pytest
 
 from inferference.diagnostics import collect_runtime_diagnostics
 from inferference.fingerprint import ArtifactIdentity, LlamaEngineFingerprint
+from inferference.gpu_env import GPU_BACKEND_LABEL
 from inferference.seq_routing import (
     NO_ADAPTER,
     SeqRoutingBinding,
@@ -25,13 +26,13 @@ from inferference.seq_routing import (
 
 
 def _fingerprint(*, seq_adapter_routing: bool = False) -> LlamaEngineFingerprint:
-    artifact = ArtifactIdentity(path="/models/ornith.gguf", sha256="a" * 64, size_bytes=1, mtime_ns=1, inode=1)
+    artifact = ArtifactIdentity(path="/models/model.gguf", sha256="a" * 64, size_bytes=1, mtime_ns=1, inode=1)
     return LlamaEngineFingerprint(
         model=artifact,
         tokenizer=artifact,
         llama_cpp_python_version="0.3.34",
         llama_cpp_commit="c588c4f47",
-        backend="cuda",
+        backend=GPU_BACKEND_LABEL,
         n_ctx=2048,
         seq_adapter_routing=seq_adapter_routing,
     )
@@ -70,7 +71,7 @@ def test_diagnostics_routing_capability_absent_when_manifest_silent(
 ) -> None:
     library_dir = tmp_path / "lib"
     library_dir.mkdir()
-    (tmp_path / "build-manifest.json").write_text(json.dumps({"profile": "cuda-3060"}))
+    (tmp_path / "build-manifest.json").write_text(json.dumps({"profile": "gpu-profile"}))
     monkeypatch.setenv("LLAMA_CPP_LIB_PATH", str(library_dir))
     assert collect_runtime_diagnostics().seq_adapter_routing is None
 

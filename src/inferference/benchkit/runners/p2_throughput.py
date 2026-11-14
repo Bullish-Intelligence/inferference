@@ -26,6 +26,7 @@ from typing import Any
 
 import llama_cpp
 
+from inferference.gpu_env import lib_backend_label
 from inferference.models import EngineConfig
 from inferference.router import AdapterSpec, MultiLoRARouter, RouterConfig, RouteRequest
 
@@ -60,7 +61,7 @@ def _make_router(args: argparse.Namespace, backend: str) -> MultiLoRARouter:
                 n_gpu_layers=-1,
                 n_batch=128,
                 seed=args.seed,
-                backend="cuda",
+                backend=lib_backend_label(),
             ),
             adapters=(
                 AdapterSpec(name="probe-a", gguf_path=str(args.lora_a)),
@@ -135,7 +136,7 @@ def main() -> int:
     seq_router = _make_router(args, "seq_routed")
     try:
         after_load = gpu_snapshot()
-        require_gpu0_only(after_load)
+        require_gpu0_only(after_load, before=gpu_before)
         for S in sizes:
             if S > args.n_seq_max:
                 continue

@@ -4,10 +4,9 @@ import importlib.util
 import json
 from pathlib import Path
 
-# The json_workload corpus moves with the bench port (03-BENCHMARK-LIBRARY-
-# the corpus files also stay byte-copied):
-#   bench/workloads/json_workload/ — byte-copied from the reference
-#   benchmarks/project17/ (sha256-verified against the manifest, Task 1).
+# The json_workload corpus files are byte-copied from the reference corpus
+# and are sha256-verified against the manifest:
+#   bench/workloads/json_workload/
 ROOT = Path(__file__).parents[1] / "bench" / "workloads" / "json_workload"
 
 

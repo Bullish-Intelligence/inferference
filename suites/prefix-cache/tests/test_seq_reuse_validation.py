@@ -15,7 +15,7 @@ context. This gate asserts:
     ``set_data`` returning 0 (the detectable, fail-closed reject; the byte
     count of the SUCCESS case is recorded, never trusted as semantic proof).
 
-GPU-only: skips (never fails) when the env lacks CUDA-offload lib / model.
+GPU-only: skips (never fails) when the env lacks GPU-offload lib / model.
 """
 
 from __future__ import annotations
@@ -29,11 +29,11 @@ from inferference.gpu_env import gpu_env_ready
 from inferference.prefix_cache_live import LlamaSeqStateBridge
 
 _REPO = Path(__file__).resolve().parents[3]
-_MODEL = asset_path("MODEL_ORNITH")
+_MODEL = asset_path("MODEL_DEFAULT")
 
 
 def _ready() -> bool:
-    # Backend-agnostic: CUDA_VISIBLE_DEVICES means nothing to the Vulkan build,
+    # Backend-agnostic: a vendor device variable means nothing to a build for another backend,
     # and requiring it here SKIPPED this suite on a rig that can run it.
     if not gpu_env_ready():
         return False
@@ -48,7 +48,7 @@ def _ready() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _ready(),
-    reason="requires CUDA-offload lib + Ornith model (GPU env)",
+    reason="requires GPU-offload lib + MODEL_DEFAULT (GPU env)",
 )
 
 

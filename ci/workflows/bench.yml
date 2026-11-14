@@ -1,6 +1,6 @@
 # bench.yml — the bench package's perf job.
 #
-# One serialized GPU job: build the integration p2fork lib, then run the
+# One serialized GPU job: build the integration vulkan-p2fork lib, then run the
 # json_workload perf baseline through the ported runner (src/inferference/benchkit/
 # runners/json_workload.py). The runner enforces GPU-0-only isolation
 # (run_json_workload.py:35-43 preserved), writes records v1 + envelope v2 +
@@ -33,8 +33,8 @@ env:
 
 jobs:
   bench:
-    runs-on: [self-hosted, cuda, rtx3060]
-    name: bench (json_workload / integration p2fork)
+    runs-on: [self-hosted, gpu, vulkan]
+    name: bench (json_workload / integration vulkan-p2fork)
     steps:
       - uses: actions/checkout@v4
 
@@ -50,12 +50,12 @@ jobs:
           source ci/runner/rig-env.sh
           ci/runner/library-venv.sh
 
-      - name: BUILD (integration p2fork)
+      - name: BUILD (integration vulkan-p2fork)
         id: build
         run: |
           set -euo pipefail
           source ci/runner/rig-env.sh
-          OUT=$(ci/build/build-llamacpp.sh --ref integration --profile p2fork 2>&1 \
+          OUT=$(ci/build/build-llamacpp.sh --ref integration --profile vulkan-p2fork 2>&1 \
             | sed -n 's#^>> done. lib set in \(.*\)/lib$#\1#p' | tail -1)
           test -n "$OUT"
           echo "out=$OUT"
@@ -92,7 +92,7 @@ jobs:
             --batch-sizes 2,4 \
             --artifacts "$CI_ARTIFACTS/artifacts/project17-p2-throughput"
 
-      # ---- state-restore family (step-6 ports; serialized, GPU 0) ---------------
+      # ---- state-restore family (serialized, GPU 0) ---------------
       # Representantive cells of the state-restore runner set (the rest run
       # on-demand via `-m inferference.benchkit.runners.<name>`): the whole-state
       # prefix-cache break-even sweep and the in-context seq-state break-even +

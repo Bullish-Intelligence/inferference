@@ -7,6 +7,15 @@
 # build is -DBUILD_SHARED_LIBS=ON.
 #
 #   mode-a-server.sh --out <out-p2fork-server-*> [--current] [--release] [--router]
+#                    [--dest-root DIR]
+#
+# --dest-root DIR publishes into DIR instead of <this repo>/ci/modea/server.
+# Use it when the script runs in a lane workspace and the artefact must land in
+# the main checkout. A workspace copy is deleted by `gitman done`.
+#
+# The script refuses to replace the build that `current` names, and a build that
+# a process of this user maps or runs. A server of another user (the router
+# unit) is invisible to that scan: stop it first, or publish under another id.
 #
 # --router publishes a llama.cpp ROUTER artefact instead of the single-role
 # routed-LoRA one: it skips the seq_adapter_routing/server_seq_routing checks
@@ -32,7 +41,7 @@
 # holds here.
 set -euo pipefail
 
-OUT=""; SET_CURRENT=1; RELEASE=0; ROUTER=0
+OUT=""; SET_CURRENT=1; RELEASE=0; ROUTER=0; DEST_ROOT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --out)        OUT="$2"; shift 2 ;;
@@ -40,14 +49,17 @@ while [[ $# -gt 0 ]]; do
     --current)    SET_CURRENT=1; shift ;;
     --release)    RELEASE=1; shift ;;
     --router)     ROUTER=1; shift ;;
+    --dest-root)  DEST_ROOT="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
-[[ -n "$OUT" ]] || { echo "usage: mode-a-server.sh --out <out-p2fork-server-*> [--no-current] [--release] [--router]" >&2; exit 2; }
+[[ -n "$OUT" ]] || { echo "usage: mode-a-server.sh --out <out-p2fork-server-*> [--no-current] [--release] [--router] [--dest-root DIR]" >&2; exit 2; }
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # repo root
 OUT="$(cd "$OUT" && pwd)"
-dest_root="${here}/ci/modea/server"
+dest_root="${DEST_ROOT:-${here}/ci/modea/server}"
+[[ -d "$dest_root" ]] || { echo "!! [mode-a-server] destination root ${dest_root} is not a directory" >&2; exit 3; }
+dest_root="$(cd "$dest_root" && pwd)"
 
 _die() { echo "!! [mode-a-server] $*" >&2; exit 3; }
 
@@ -90,6 +102,21 @@ if (( RELEASE )); then
 fi
 
 dest="${dest_root}/${build_id}"
+
+# --- never replace a build that is in use --------------------------------------
+# The swap below does `rm -rf "$dest"`. Refuse when `current` names this build,
+# or when a process of this user maps or runs a file under it.
+if [[ -L "${dest_root}/current" && "$(readlink "${dest_root}/current")" == "$build_id" ]]; then
+  _die "'current' names ${build_id}. Publishing over it would replace a build the router starts. Repoint 'current' first, or publish under another id."
+fi
+if [[ -d "$dest" ]]; then
+  in_use="$(grep -l -F -- "${dest}/" /proc/[0-9]*/maps 2>/dev/null || true)"
+  for exe in /proc/[0-9]*/exe; do
+    target="$(readlink "$exe" 2>/dev/null || true)"
+    if [[ "$target" == "${dest}/"* ]]; then in_use+="${in_use:+$'\n'}${exe}"; fi
+  done
+  [[ -z "$in_use" ]] || { printf '%s\n' "$in_use" >&2; _die "a running process maps or runs a file under ${dest}. Stop it first."; }
+fi
 echo ">> publishing ${OUT}"
 echo ">>        -> ${dest}   (profile ${profile}, ref ${ref_built})"
 
@@ -100,6 +127,14 @@ cp -a "${OUT}/bin"     "${dest}.tmp/"
 cp -a "${OUT}/lib"     "${dest}.tmp/"
 [[ -d "${OUT}/include" ]] && cp -a "${OUT}/include" "${dest}.tmp/"
 cp -a "$man"           "${dest}.tmp/build-manifest.json"
+# The server holds llama.cpp and ggml code. Its licence notice travels with it.
+# A build made before build-llamacpp.sh copied the notice has none; the server then
+# ships without one, and this line says so.
+if [[ -f "${OUT}/LICENSE.llama.cpp" ]]; then
+  cp -a "${OUT}/LICENSE.llama.cpp" "${dest}.tmp/LICENSE.llama.cpp"
+else
+  echo "!! ${OUT} has no LICENSE.llama.cpp (it predates the licence copy). Rebuild to ship the notice." >&2
+fi
 
 # --- prove the artefact is self-contained FROM ITS NEW HOME -------------------
 # The binary's RUNPATH is "$ORIGIN/../lib:<the build tree>" (build-llamacpp.sh
@@ -125,9 +160,28 @@ grep -qi 'version' <<<"$ver" || { echo "$ver" >&2; rm -rf "${dest}.tmp"; _die "t
 # The build manifest is a cross-repo contract (ci/build/build-manifest.md) and is
 # copied byte-for-byte. What is true of the PUBLICATION rather than the build
 # goes beside it, so no reader of the contract sees a new key.
-python3 - "$dest.tmp" "$OUT" "$ref_built" "$wheel_commit" "$agree" <<'PY'
-import json, sys
-dest, src, ref, wheel, agree = sys.argv[1:6]
+python3 - "$dest.tmp" "$OUT" "$ref_built" "$wheel_commit" "$agree" "$server_patch" "$wheel_patch" <<'PY'
+import hashlib, json, os, sys
+dest, src, ref, wheel, agree, server_patch, wheel_patch = sys.argv[1:8]
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+# Hash every regular file in bin/ and lib/ as published. A symlink points at a
+# file that has its own entry, so it adds no entry. A reader proves the artefact
+# with `sha256sum` alone; the build directory may be gone.
+hashes = {}
+for sub in ("bin", "lib"):
+    for name in sorted(os.listdir(os.path.join(dest, sub))):
+        path = os.path.join(dest, sub, name)
+        if os.path.isfile(path) and not os.path.islink(path):
+            hashes[f"{sub}/{name}"] = sha256(path)
 json.dump({
     "artefact": "llama-server",
     "mode": "A",
@@ -136,6 +190,11 @@ json.dump({
                      "(llama_cpp/llama_cpp.py:36-43, _ctypes_extensions.py:37-40,:102). "
                      "Every server artefact is Mode A provenance by construction.",
     "source_out_dir": src,
+    "source_out_dir_note": "The build directory at publication time. It can be gone later; "
+                           "prove the artefact with artefact_sha256 instead.",
+    "vulkan_residency_patch_sha256": server_patch,
+    "wheel_vulkan_residency_patch_sha256": wheel_patch,
+    "artefact_sha256": hashes,
     "server_llama_cpp_commit": ref,
     "wheel_llama_cpp_commit": wheel,
     "wheel_and_server_same_commit": agree == "true",

@@ -54,6 +54,7 @@ from .runner import (
     _run_one,
     _wait_for_next_run_directory_tick,
 )
+from .stop import StopRequest
 
 __all__ = [
     "GATE_BARRIER",
@@ -269,12 +270,14 @@ def run_pair(
     fan_lease_factory: Callable[[str], FanLeaseLike] = FanLease,
     http_timeout_s: float = 900,
     rendezvous_timeout_s: float = _DEFAULT_RENDEZVOUS_TIMEOUT_S,
+    stop_request: StopRequest | None = None,
 ) -> tuple[PairResult, ...]:
     """Run every scheduled pair until the first pair with a run that is not completed or bounded.
 
     `targets` holds one `RunTarget` per card of `fixed.placement`. The cards
     need distinct ports. `card_envs` adds environment values for one card's
     server. The two runs share one fan lease and one model-hash cache.
+    A set `stop_request` stops both active runs and starts no later pair.
     """
     spec, spec_sha256 = _load_spec_bytes(spec_path)
     placement = spec.fixed.placement
@@ -295,6 +298,8 @@ def run_pair(
     results: list[PairResult] = []
     scheduled_runs = schedule(spec)
     for index, scheduled_run in enumerate(scheduled_runs):
+        if stop_request is not None and stop_request.is_set():
+            break
         sync = PairSync(placement.cards, timeout_s=rendezvous_timeout_s)
         # One shared lease for both runs. The last release restores the fan.
         shared_lease = SharedFanLease(fan_lease_factory(spec.fixed.control.fan_profile))
@@ -323,6 +328,7 @@ def run_pair(
                     model_hashes=model_hashes,
                     sync=handle,
                     model_hash_lock=model_hash_lock,
+                    stop_request=stop_request,
                 )
             finally:
                 # Also covers a failure before `_run_one` can depart on its own.

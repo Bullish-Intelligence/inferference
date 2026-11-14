@@ -1,12 +1,12 @@
 # yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
 #
-# Inferference — a repoman-managed Python devenv repo.
+# Inferference — a Python devenv repo.
 #
-# This file is committed in the FLEET shape: every first-party input names a
+# This file is committed in the pinned shape: every first-party input names a
 # published tag, so a fresh clone and CI both evaluate it with no sibling
-# checkouts. `git+https://` and not the `github:` shorthand: several of these
-# repos are private, and only the git fetcher uses your git credential helper.
-# Personal tool modules come from the machine's central Devman overlay.
+# checkouts. `git+https://` and not the `github:` shorthand: some of these
+# repos can be private, and only the git fetcher uses your git credential helper.
+# Personal tool modules come from a machine-local overlay.
 inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling

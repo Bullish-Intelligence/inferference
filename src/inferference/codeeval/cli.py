@@ -2,7 +2,7 @@
 
 Two endpoint shapes, one code path:
 
-* ``--endpoint local`` — the router on this machine, OpenAI-compatible.
+* ``--endpoint local`` — the router on the local host, OpenAI-compatible.
 * ``--endpoint deepseek`` — a hosted baseline. The key comes from the gitignored
   ``.env``; it is never written into an artifact.
 

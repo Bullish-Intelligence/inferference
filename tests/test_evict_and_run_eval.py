@@ -1,6 +1,6 @@
 """Fake-router tests for ``ci/runner/evict-and-run-eval.sh``.
 
-The script chains two owner steps -- evict a card from the router via
+The script chains two steps -- evict a card from the router via
 ``ci/runner/inferference-reconcile.py evict``, wait for the card to drain
 below the runner's residency floor, then exec the experiment run CLI. These
 tests replace every child process with a stub python (the same PATH-fake
@@ -266,7 +266,7 @@ def test_no_evict_still_refuses_a_card_that_holds_a_model(tmp_path: Path) -> Non
 
 def test_artifact_root_carries_the_experiment_number(tmp_path: Path) -> None:
     env = _make_host(tmp_path, vram_mib=16)
-    spec_dir = tmp_path / "033-v620-cooling-v2-cap"
+    spec_dir = tmp_path / "101-power-cap"
     spec_dir.mkdir()
     spec = spec_dir / "arm-160w.yaml"
     spec.write_text("experiment: stub\nschema_version: 1\n")
@@ -276,4 +276,4 @@ def test_artifact_root_carries_the_experiment_number(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     argv = _run_argv(env)
     artifact_root = Path(argv[argv.index("--artifact-root") + 1])
-    assert re.fullmatch(r"033-arm-160w-\d{8}T\d{6}Z", artifact_root.name), artifact_root
+    assert re.fullmatch(r"101-arm-160w-\d{8}T\d{6}Z", artifact_root.name), artifact_root

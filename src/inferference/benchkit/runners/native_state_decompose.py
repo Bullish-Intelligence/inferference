@@ -8,7 +8,7 @@ buffer). Both codecs restore the SAME native llama.cpp context state, so
 continuation correctness is a hard, fail-closed gate: any restored token that
 differs from the cold baseline raises. CUDA sync via ``llama_synchronize``.
 
-GPU-only: CUDA_VISIBLE_DEVICES=0, n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
+GPU-only: one card pinned (LLAMA_CI_GPU), n_gpu_layers=-1, LLAMA_CPP_LIB_PATH pinned.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import numpy as np
 
 from inferference.diagnostics import collect_runtime_diagnostics
 from inferference.fingerprint import LlamaEngineFingerprint, register_artifact
+from inferference.gpu_env import lib_backend_label
 
 from ..env import gpu_snapshot, require_ci_device, require_gpu0_only
 from ..runenv import RunContext
@@ -102,7 +103,7 @@ def main() -> int:
 
     llm = mk()
     after_load = gpu_snapshot()
-    require_gpu0_only(after_load)
+    require_gpu0_only(after_load, before=gpu_before)
     runtime = collect_runtime_diagnostics()
     identity = register_artifact(args.model, metadata={"role": "model-and-gguf-tokenizer"})
     fingerprint = LlamaEngineFingerprint(
@@ -111,7 +112,7 @@ def main() -> int:
         llama_cpp_python_version=runtime.llama_cpp_python_version or "unknown",
         llama_cpp_commit=runtime.llama_cpp_commit,
         llama_cpp_build_id=runtime.llama_cpp_build_id,
-        backend="cuda",
+        backend=lib_backend_label(),
         n_ctx=args.n_ctx,
     )
     tokens = tuple(llm.tokenize(b"Persistent exact prefix cache workload. " * 100, add_bos=False, special=True))
