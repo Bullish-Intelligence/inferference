@@ -74,7 +74,9 @@ def _atomic_text(path: Path, value: str) -> None:
     _atomic_write(path, value.encode())
 
 
-def _wait_for(predicate: Any, *, timeout_s: float = 8.0) -> bool:
+def _wait_for(predicate: Any, *, timeout_s: float = 60.0) -> bool:
+    # The wait returns as soon as the predicate holds. The long limit only matters on a loaded
+    # host, where a parallel worker can delay a fake server for many seconds.
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if predicate():
@@ -517,7 +519,7 @@ def test_arm_bound_run_is_bounded_and_next_scheduled_run_starts(
                 _atomic_text(host.card0_device / "hwmon" / "hwmon1" / sensor, "76000\n")
             _wait_for(
                 lambda: host.sigint_file.exists() and host.sigint_file.stat().st_mtime_ns != initial_sigint_mtime,
-                timeout_s=5,
+                timeout_s=30,
             )
             for sensor in ("temp1_input", "temp2_input", "temp3_input"):
                 _atomic_text(host.card0_device / "hwmon" / "hwmon1" / sensor, "20000\n")
@@ -570,7 +572,7 @@ def test_arm_bound_stream_death_at_shutdown_stays_bounded(tmp_path: Path, monkey
                 _atomic_text(host.card0_device / "hwmon" / "hwmon1" / sensor, "76000\n")
             _wait_for(
                 lambda: host.sigint_file.exists() and host.sigint_file.stat().st_mtime_ns != initial_sigint_mtime,
-                timeout_s=5,
+                timeout_s=30,
             )
             for sensor in ("temp1_input", "temp2_input", "temp3_input"):
                 _atomic_text(host.card0_device / "hwmon" / "hwmon1" / sensor, "20000\n")
@@ -616,7 +618,7 @@ def test_table_drift_after_arm_bound_is_invalid_and_stops_schedule(
                 return
             for sensor in ("temp1_input", "temp2_input", "temp3_input"):
                 _atomic_text(host.card0_device / "hwmon" / "hwmon1" / sensor, "76000\n")
-            _wait_for(lambda: host.sigint_file.exists(), timeout_s=5)
+            _wait_for(lambda: host.sigint_file.exists(), timeout_s=30)
             stop.set()
 
         watcher_stop, watcher = _watch(host, ramp_to_arm_bound)

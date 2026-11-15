@@ -16,9 +16,13 @@ GUARD = ROOT / "ci/runner/gpu-thermal-guard.sh"
 UNIT_TEMPLATE = ROOT / "ci/runner/inferference-router.service.in"
 NIX_MODULE = ROOT / "nix/nixos-module.nix"
 
-pytestmark = pytest.mark.skipif(
+_LINUX_ONLY = pytest.mark.skipif(
     sys.platform != "linux", reason="the guard and its relay need Linux: /proc, process groups, signals"
 )
+# The guard tests race real timers: a worker pid, a poll interval, a hold time. Under xdist
+# (`--dist loadgroup`) every test with this group name runs in one worker, so they do not
+# compete with each other for the CPU.
+pytestmark = [_LINUX_ONLY, pytest.mark.xdist_group("thermal-guard")]
 
 
 def _environment(tmp_path: Path, temperature_mc: int = 65_000) -> tuple[dict[str, str], Path]:
@@ -84,11 +88,11 @@ def test_thermal_trip_returns_distinct_status_and_kills_process_group(tmp_path: 
     target.write_text(
         "#!/usr/bin/env bash\n"
         "trap '' TERM\n"
-        f"printf '%s\\n' \"$BASHPID\" > {parent_pid_file}\n"
+        f"printf '%s\\n' \"$BASHPID\" > {parent_pid_file}.tmp && mv {parent_pid_file}.tmp {parent_pid_file}\n"
         "while :; do\n"
         "  sleep 60 &\n"
         "  child=$!\n"
-        f"  printf '%s\\n' \"$child\" > {child_pid_file}\n"
+        f"  printf '%s\\n' \"$child\" > {child_pid_file}.tmp && mv {child_pid_file}.tmp {child_pid_file}\n"
         '  wait "$child" || true\n'
         "done\n"
     )
@@ -210,7 +214,11 @@ def test_fan_failure_during_run_returns_safety_status_and_cleans_process_group(t
     env, _ = _environment(tmp_path)
     parent_pid_file = tmp_path / "parent.pid"
     target = tmp_path / "worker.sh"
-    target.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$BASHPID\" > {parent_pid_file}\nexec sleep 60\n")
+    target.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$BASHPID\" > {parent_pid_file}.tmp && mv {parent_pid_file}.tmp {parent_pid_file}\n"
+        "exec sleep 60\n"
+    )
     target.chmod(0o755)
 
     process = subprocess.Popen(
@@ -311,7 +319,11 @@ def _start_guarded_sleeper(
     """
     parent_pid_file = tmp_path / "parent.pid"
     target = tmp_path / "worker.sh"
-    target.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$BASHPID\" > {parent_pid_file}\nexec sleep 60\n")
+    target.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$BASHPID\" > {parent_pid_file}.tmp && mv {parent_pid_file}.tmp {parent_pid_file}\n"
+        "exec sleep 60\n"
+    )
     target.chmod(0o755)
     process = subprocess.Popen(
         [str(GUARD), "run", "--", "bash", str(target)],
@@ -582,6 +594,16 @@ def _wait_for(predicate, timeout: float = 30.0) -> bool:  # type: ignore[no-unty
     return False
 
 
+def _publish_pid_code(pid_file: Path) -> str:
+    """Return Python source that writes the worker pid to `pid_file` in one step.
+
+    A plain `open(path, "w").write(...)` makes the file before it fills it. A test that waits
+    for the file can then read an empty pid. The worker writes a temporary file and renames it.
+    """
+    temporary = f"{pid_file}.tmp"
+    return f"open({temporary!r}, 'w').write(str(os.getpid()))\nos.replace({temporary!r}, {str(pid_file)!r})\n"
+
+
 def _idle_worker(pid_file: Path) -> str:
     """Return a bash line that runs a worker which stops on SIGINT, the way llama-server does.
 
@@ -593,7 +615,7 @@ def _idle_worker(pid_file: Path) -> str:
     code = (
         "import os, signal, sys\n"
         "signal.signal(signal.SIGINT, lambda *_: sys.exit(0))\n"
-        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        f"{_publish_pid_code(pid_file)}"
         "while True:\n    signal.pause()\n"
     )
     return f"exec {shlex.quote(sys.executable)} -I -c {shlex.quote(code)}"
@@ -748,7 +770,7 @@ def test_pause_mode_thaws_the_group_when_the_guard_is_told_to_stop(tmp_path: Pat
         "import os, signal, sys, time\n"
         f"def handler(sig, frame):\n    open({str(marker)!r}, 'w').write('1')\n    os._exit(0)\n"
         "signal.signal(signal.SIGINT, handler)\n"
-        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        f"{_publish_pid_code(pid_file)}"
         "while True:\n    time.sleep(0.02)\n"
     )
     log = tmp_path / "guard.log"

@@ -4,6 +4,18 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project uses [Semantic Versioning](https://semver.org/). Before 1.0, a minor
 release can break compatibility. Each break has a migration step below.
 
+## Unreleased
+
+### Changed
+
+- Tests: `test:full` runs on pytest-xdist (`-n auto --dist loadgroup`). The dev
+  group gains `pytest-xdist`. The thermal guard and signal relay tests share the
+  `xdist_group` name `thermal-guard`, so they run on one worker.
+- Tests: a pid file that a test reads is now written in one step (write a
+  temporary file, then rename). Before, a test could read an empty pid file.
+- Tests: the experiment tests wait up to 60 s, not 8 s, for a fake server to
+  reach a workload request. A loaded host no longer ends the wait early.
+
 ## 0.4.3
 
 ### Changed

@@ -21,9 +21,13 @@ from .test_gpu_thermal_guard import GUARD, ROOT, _environment
 
 RELAY = ROOT / "ci/runner/gpu-thermal-signal-relay.py"
 
-pytestmark = pytest.mark.skipif(
+_LINUX_ONLY = pytest.mark.skipif(
     sys.platform != "linux", reason="the guard and its relay need Linux: /proc, process groups, signals"
 )
+# The guard tests race real timers: a worker pid, a poll interval, a hold time. Under xdist
+# (`--dist loadgroup`) every test with this group name runs in one worker, so they do not
+# compete with each other for the CPU.
+pytestmark = [_LINUX_ONLY, pytest.mark.xdist_group("thermal-guard")]
 
 # A child that counts every signal it gets and writes the count to a file.
 _COUNTING_CHILD = """

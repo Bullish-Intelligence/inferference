@@ -44,7 +44,7 @@ dependencies = [
 
 # Developer tools; Testee uses the pinned library venv.
 [dependency-groups]
-dev = ["gguf", "pytest", "ruff", "ty==0.0.65"]
+dev = ["gguf", "pytest", "pytest-xdist>=3.8.0", "ruff", "ty==0.0.65"]
 
 [project.optional-dependencies]
 # The decode path: everything that touches llama.cpp memory or the tokenizer.

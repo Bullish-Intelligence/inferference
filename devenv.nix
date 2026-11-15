@@ -180,13 +180,17 @@
       };
 
       "test:full" = {
-        # About 4.4 min warm on a busy host (1400 tests; the slowest takes under 10 s). The default
-        # limit of 300 s is too tight. The `runtime` marker names the 3 tests that import the
-        # native stack.
+        # pytest-xdist runs the tests on one worker per CPU (`-n auto`). `--dist loadgroup` keeps
+        # every test with the same `xdist_group` name on one worker: the thermal guard tests race
+        # real timers and share one group. The serial run took about 4.4 min on a busy host
+        # (1400 tests; the slowest takes under 10 s). The parallel runs took 2 to 3.5 min while
+        # the host load average was 30 to 70, so these times are an upper bound. The timeout stays
+        # at 520 s until a quiet host gives a final time. The `runtime` marker names the 3 tests
+        # that import the native stack.
         exec = ''
           out="''${TESTEE_RUN_DIR:-.devenv/state}"
           mkdir -p "$out"
-          uv run --no-sync python -m pytest -m "not runtime" --junitxml="$out/test:full.junit.xml"
+          uv run --no-sync python -m pytest -m "not runtime" -n auto --dist loadgroup --junitxml="$out/test:full.junit.xml"
         '';
         input.testee = { timeout_s = 520; ignores = unread; };
       };
