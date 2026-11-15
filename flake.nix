@@ -34,6 +34,7 @@
       packages = forSystems (pkgs:
         let
           built = import ./nix/package.nix { inherit pkgs pyproject-nix uv2nix pyproject-build-systems; };
+          server-bin = pkgs.callPackage ./nix/llama-server-bin.nix { };
         in
         {
           # The serving package: bin/inferference-router-launch, -router-reload,
@@ -43,24 +44,31 @@
           # The locked Python env: core dependencies only, never the `runtime` extra.
           env = built.env;
 
+          # The Mode A llama-server compile (nix/llama-server-bin.nix): bin/llama-server
+          # and lib/ only. No build id and no manifest, so its hash does not
+          # change with the metadata. Override `stdenv` to use ccache:
+          #   server-bin.override { stdenv = pkgs.ccacheStdenv; }
+          inherit server-bin;
+
           # The Mode A llama-server (nix/llama-server.nix): bin/llama-server,
-          # lib/, the manifests. Point INFERFERENCE_SERVER_DIR at this output.
-          server = pkgs.callPackage ./nix/llama-server.nix { };
+          # lib/, the manifests, built on `server-bin` in seconds. Point
+          # INFERFERENCE_SERVER_DIR at this output.
+          server = pkgs.callPackage ./nix/llama-server.nix { llama-server-bin = server-bin; };
         });
 
       checks = forSystems (pkgs: {
         # Build the serving package. It runs the install check of the wrappers.
         package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
-        # Evaluate the llama-server derivation and force its store path. The
-        # check does not build it: a build compiles llama.cpp and takes long.
-        # Build it with `nix build .#server`.
+        # Evaluate the llama-server derivations and force their store paths. The
+        # check does not build them: the compile takes long. Build it with
+        # `nix build .#server-bin`, and the wrapper with `nix build .#server`.
         server-eval =
           let
-            drv = self.packages.${pkgs.stdenv.hostPlatform.system}.server;
+            drvs = with self.packages.${pkgs.stdenv.hostPlatform.system}; [ server-bin server ];
           in
           pkgs.runCommand "inferference-server-eval" { } ''
-            echo ${builtins.unsafeDiscardStringContext drv.drvPath} > "$out"
+            echo ${builtins.unsafeDiscardStringContext (pkgs.lib.concatMapStringsSep " " (d: d.drvPath) drvs)} > "$out"
           '';
 
         # A stale uv.lock fails this check (verify runs `uv lock --check` too).

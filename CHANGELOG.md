@@ -24,6 +24,18 @@ release can break compatibility. Each break has a migration step below.
   names the device from the server log, and it finds builds of both the old and
   the new profile names. The old name stays for one release as a shim that
   prints a deprecation line and runs the new script.
+- Packaging: the Nix llama-server build has two derivations. `packages.server-bin`
+  (`nix/llama-server-bin.nix`) compiles the fork. It holds no build id and no
+  manifest. `packages.server` (`nix/llama-server.nix`) adds the launcher layout,
+  the licence, `build-manifest.json` and `modea-provenance.json` in seconds. A
+  change to the profile id or to the manifest text no longer recompiles
+  llama.cpp. The manifest keys do not change. `bin/llama-server` and `lib` in
+  `packages.server` are links into `packages.server-bin`.
+- Packaging: the compile builds the `llama-server` target only. The other tools
+  (cli, bench, quantize, imatrix, tts) and the `llama` app are not built.
+  `bin/` of `packages.server` holds `llama-server` only.
+- Packaging: `llama-server-bin.nix` takes `stdenv` as an argument. Use
+  `.override { stdenv = pkgs.ccacheStdenv; }` to compile with ccache.
 
 ## 0.4.2
 

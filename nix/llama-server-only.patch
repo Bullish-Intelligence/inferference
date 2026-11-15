@@ -1,0 +1,50 @@
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -14,30 +14,10 @@
+ 
+ if (EMSCRIPTEN)
+ else()
+-    add_subdirectory(batched-bench)
+-    add_subdirectory(gguf-split)
+-    add_subdirectory(imatrix)
+-    add_subdirectory(llama-bench)
+-    add_subdirectory(completion)
+-    add_subdirectory(perplexity)
+-    add_subdirectory(quantize)
+-    if (LLAMA_BUILD_SERVER)
+-        add_subdirectory(ui)
+-        add_subdirectory(cli)
+-        add_subdirectory(server)
+-    endif()
+-    add_subdirectory(tokenize)
+-    add_subdirectory(parser)
+-    add_subdirectory(tts)
++    # Build only what llama-server links: the UI stub, the server and mtmd.
++    # The other tools (cli, bench, quantize, imatrix, tts and the rest) are not
++    # part of the Mode A server and cost compile time.
++    add_subdirectory(ui)
++    add_subdirectory(server)
+     add_subdirectory(mtmd)
+-    if (GGML_RPC)
+-        add_subdirectory(rpc)
+-    endif()
+-    if (NOT GGML_BACKEND_DL AND GGML_CPU)
+-        # these tools use backends directly (no dynamic loading) and depend on CPU backend symbols
+-        add_subdirectory(cvector-generator)
+-        add_subdirectory(export-lora)
+-    endif()
+-    add_subdirectory(fit-params)
+-    add_subdirectory(results)
+ endif()
+--- a/tools/mtmd/CMakeLists.txt
++++ b/tools/mtmd/CMakeLists.txt
+@@ -129,7 +129,8 @@
+ # builds (LLAMA_BUILD_MTMD=ON with LLAMA_BUILD_TOOLS=OFF — e.g. Apple
+ # XCFramework packaging) skip the executables entirely. LLAMA_BUILD_COMMON
+ # defaults to ON in standalone builds, so we cannot rely on it for gating.
+-if (LLAMA_BUILD_TOOLS)
++# The Mode A server needs the library only, so this build skips the executables.
++if (FALSE)
+     add_executable(llama-llava-cli    deprecation-warning.cpp)
+     add_executable(llama-gemma3-cli   deprecation-warning.cpp)
+     add_executable(llama-minicpmv-cli deprecation-warning.cpp)

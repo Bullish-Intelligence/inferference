@@ -264,26 +264,58 @@ left implicit.
 
 ### The server as a Nix derivation
 
-`nix/llama-server.nix` builds the same server with Nix. It is a `callPackage`
-file: `pkgs.callPackage ./nix/llama-server.nix { }`. It fetches the fork at the
-pinned commit, applies `ci/build/patches/vulkan-residency.patch`, and builds
-with Vulkan and no CUDA. It reuses the nixpkgs `llama-cpp` recipe. It sets
-`GGML_NATIVE=OFF` and names the x86 flags of the Xeon W-2125 (AVX2, FMA, F16C,
-BMI2, AVX-512 F/DQ/CD/BW/VL).
+Two `callPackage` files build the same server with Nix:
+
+- `nix/llama-server-bin.nix` (`packages.server-bin`) is the compile. It fetches
+  the fork at the pinned commit, applies `ci/build/patches/vulkan-residency.patch`,
+  and builds with Vulkan and no CUDA. It reuses the nixpkgs `llama-cpp` recipe.
+  It sets `GGML_NATIVE=OFF` and names the x86 flags of the Xeon W-2125 (AVX2,
+  FMA, F16C, BMI2, AVX-512 F/DQ/CD/BW/VL). It holds no build id, no manifest and
+  no timestamp, so its hash follows only the source, the patches, the flags and
+  the stdenv.
+- `nix/llama-server.nix` (`packages.server`) is the wrapper. It adds the
+  launcher layout, `LICENSE.llama.cpp`, `build-manifest.json` and
+  `modea-provenance.json` to the compile output. It compiles nothing and takes
+  seconds. The profile id and the build id are plain values at the top of the
+  file. A change to them, or to the manifest text, rebuilds the wrapper only.
+
+The compile builds the `llama-server` target only. `nix/llama-server-only.patch`
+removes the other tools from the cmake tree, and `LLAMA_BUILD_APP` is off. The
+server keeps ggml with the CPU and Vulkan backends, libllama, libllama-common
+and libmtmd.
+
+`nix/llama-server-bin.nix` takes `stdenv` as an argument. To compile with
+ccache, override it. The wrapper then takes the overridden compile:
+
+```nix
+inferference.packages.${system}.server.override {
+  llama-server-bin = inferference.packages.${system}.server-bin.override {
+    stdenv = pkgs.ccacheStdenv;
+  };
+}
+```
+
+`pkgs.ccacheStdenv` needs a ccache directory that the Nix build user can
+write. The host sets that up.
 
 The output has the layout of a published artefact: `bin/llama-server`, `lib/`,
-`LICENSE.llama.cpp`, `build-manifest.json`, `modea-provenance.json`. The
-manifest keys are the keys above, with one added key, `build_system: "nix"`.
-`vulkan_residency_patch_sha256` is the hash of the patch file in this
-repository. A build fails when the patch file and its recorded hash differ.
+`LICENSE.llama.cpp`, `build-manifest.json`, `modea-provenance.json`. In the
+wrapper, `bin/llama-server` and `lib` are links into the compile output. The
+RUNPATH of the binary names the compile output, so the links work from any
+path. To publish a copy with `mode-a-server.sh`, resolve the links first
+(`cp -aL`). The manifest keys are the keys above, with one added key,
+`build_system: "nix"`. `vulkan_residency_patch_sha256` is the hash of the patch
+file in this repository. A build fails when the patch file and its recorded
+hash differ.
 
 The vulkan-loader in the store finds the driver in
 `/run/opengl-driver/share/vulkan/icd.d`. The host fills that directory when
 `hardware.graphics.enable` is set. Point `INFERFERENCE_SERVER_DIR` at the
 store path to use it.
 
-The flake exposes it as `packages.server`: `nix build .#server`. The check
-`server-eval` evaluates it and does not build it, so `nix flake check` stays
+The flake exposes the wrapper as `packages.server` (`nix build .#server`) and
+the compile as `packages.server-bin` (`nix build .#server-bin`). The check
+`server-eval` evaluates both and builds neither, so `nix flake check` stays
 fast. `packages.default` holds the services. Set `INFERFERENCE_SERVER_DIR` to
 the `.#server` output to start the router with this server.
 
