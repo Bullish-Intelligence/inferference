@@ -154,7 +154,7 @@ expected_patch="$(sha256sum "$patch_file" | cut -d ' ' -f 1)"
 [[ "$residency_patch" == "$expected_patch" ]] || _cfg "server does not carry the current residency patch"
 
 # --- the backend: Vulkan/RADV, not CUDA ---------------------------------------
-# The served artefact is a vulkan-mi25-server build, and its RUNPATH already
+# The served artefact is a Vulkan server build (`vulkan-p2fork-server`), and its RUNPATH already
 # resolves libvulkan.so.1 straight out of the nix store — measured: `ldd` on
 # both llama-server and libggml-vulkan.so needs no LD_LIBRARY_PATH help at all.
 # There is no libcuda/CUDA-stub failure mode to check for on this backend, and
@@ -162,8 +162,8 @@ expected_patch="$(sha256sum "$patch_file" | cut -d ' ' -f 1)"
 # not have.
 #
 # What CAN mislabel a build is a profile name that promises Vulkan but was not
-# actually built with it (ci/gates/vulkan_mi25_smoke.sh checks the same thing):
-# a `vulkan-mi25-server` artefact with no libggml-vulkan.so would silently run
+# actually built with it (ci/gates/vulkan_smoke.sh checks the same thing):
+# a Vulkan server artefact with no libggml-vulkan.so would silently run
 # every model on the CPU backend with no error anywhere.
 ls "${server_dir}"/lib/libggml-vulkan.so* >/dev/null 2>&1 \
   || _cfg "${server_dir}/lib has no libggml-vulkan.so — this artefact is not a Vulkan build. Every model the router loads would run on the CPU backend with no error anywhere."

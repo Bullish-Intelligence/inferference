@@ -4,6 +4,27 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project uses [Semantic Versioning](https://semver.org/). Before 1.0, a minor
 release can break compatibility. Each break has a migration step below.
 
+## Unreleased
+
+### Changed
+
+- Hardware: the rig has two AMD Radeon Pro V620 cards (RDNA2, Navi21, gfx1030,
+  32 GB each). They replaced the AMD Instinct MI25 cards. Comments and docs
+  that named the MI25 now name the V620 or no card.
+- Build profiles: the Vulkan profiles lose the card name. `vulkan-mi25` is now
+  `vulkan`, `vulkan-mi25-server` is `vulkan-server`, and
+  `vulkan-mi25-p2fork-server` is `vulkan-p2fork-server`. The old names stay as
+  aliases. `build-llamacpp.sh` and `mode-a-manifest.sh` accept them and print a
+  deprecation line. New builds and the Nix `packages.server` use the new
+  names, so the `build_id` of `packages.server` changes. The cffi bindgen gate
+  accepts both. The experiment preflight treats an old `build_id` prefix as the
+  new one, so recorded specs and manifests still resolve
+  (`inferference.build_profiles`).
+- Gates: `ci/gates/vulkan_mi25_smoke.sh` is now `ci/gates/vulkan_smoke.sh`. It
+  names the device from the server log, and it finds builds of both the old and
+  the new profile names. The old name stays for one release as a shim that
+  prints a deprecation line and runs the new script.
+
 ## 0.4.2
 
 ### Added

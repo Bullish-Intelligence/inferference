@@ -69,9 +69,10 @@ timeout_s="${GPU_LEASE_TIMEOUT:-900}"
 
 # --- vendor dispatch ----------------------------------------------------------
 # The rig's cards decide how free VRAM is read. NVIDIA answers through
-# nvidia-smi; AMD answers through amdgpu's sysfs, because this rig's MI25s are
-# gfx900 and ROCm (rocm-smi) dropped that target after 5.7 — the Vulkan baseline
-# deliberately installs no ROCm. Detection is by which reader is actually
+# nvidia-smi; AMD answers through amdgpu's sysfs, because the Vulkan baseline
+# deliberately installs no ROCm (rocm-smi). The first cards of this rig, the
+# MI25 (gfx900), were outside ROCm support after 5.7. The cards now are two
+# AMD Radeon Pro V620. Detection is by which reader is actually
 # present, never by which cards are expected. Override with GPU_LEASE_VENDOR.
 
 # --- per-card VRAM ------------------------------------------------------------
@@ -289,7 +290,7 @@ done
 #
 # The value is the same DRM index the rest of the lease uses. That index is only
 # valid as a Vulkan device index if the two enumerations agree, which is NOT
-# guaranteed — ci/gates/vulkan_mi25_smoke.sh checks the PCI address for exactly
+# guaranteed — ci/gates/vulkan_smoke.sh checks the PCI address for exactly
 # this reason and fails loudly if they ever diverge.
 export LLAMA_CI_GPU="$card"
 export CUDA_VISIBLE_DEVICES="$card"

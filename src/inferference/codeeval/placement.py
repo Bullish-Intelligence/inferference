@@ -52,9 +52,9 @@ class DeviceReading(BaseModel):
 def read_device(card: int) -> DeviceReading:
     """Read a DRM card from amdgpu sysfs.
 
-    sysfs is the vendor-truthful source on this rig: ROCm dropped gfx900 after
-    5.7, so there is no rocm-smi to ask, and ``ci/runner/gpu-lease.sh`` reads the
-    same files.
+    sysfs is the vendor-truthful source on this rig: ROCm is not installed
+    (the Vulkan baseline needs none), so there is no rocm-smi to ask, and
+    ``ci/runner/gpu-lease.sh`` reads the same files.
     """
     base = Path(f"/sys/class/drm/card{card}/device")
     try:

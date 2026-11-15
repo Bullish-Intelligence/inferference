@@ -40,6 +40,13 @@ done
 [[ -n "$COMMIT" && -n "$LIB_DIR" && -n "$PROFILE" && -n "$DEST" ]] \
   || { echo "usage: mode-a-manifest.sh --commit <sha> --lib-dir <dir> --profile <name> --dest <dir> [--flags <s>]" >&2; exit 2; }
 
+# An old profile name becomes its hardware-neutral name, as in build-llamacpp.sh.
+case "$PROFILE" in
+  vulkan-mi25)               PROFILE="vulkan" ;;
+  vulkan-mi25-server)        PROFILE="vulkan-server" ;;
+  vulkan-mi25-p2fork-server) PROFILE="vulkan-p2fork-server" ;;
+esac
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"      # ci/build
 # LLAMACPP_WORK names the build garage that holds the fork clone. A lane
 # workspace has no garage of its own; point this at the main checkout's.

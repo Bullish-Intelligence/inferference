@@ -226,9 +226,27 @@ def test_profile_table_names_vulkan_p2fork_in_each_arm() -> None:
     family = re.search(r'case "\$PROFILE" in\n\s+(p2fork \|[^)]*)\)\s+is_p2fork=1', text)
     assert family is not None
     assert "vulkan-p2fork" in family.group(1)
-    vulkan = re.search(r"\n  (vulkan-mi25 \|[^)]*)\)\n", text)
+    vulkan = re.search(r"\n  (vulkan \|[^)]*)\)\n", text)
     assert vulkan is not None
     assert "vulkan-p2fork" in vulkan.group(1)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("vulkan-mi25", "vulkan"),
+        ("vulkan-mi25-server", "vulkan-server"),
+        ("vulkan-mi25-p2fork-server", "vulkan-p2fork-server"),
+    ],
+)
+def test_an_old_vulkan_profile_name_builds_under_the_new_name(tmp_path: Path, old: str, new: str) -> None:
+    """The old name is an alias: the build runs, and the manifest and build id carry the new name."""
+    manifest, log, done = _run_build(tmp_path, old)
+    assert done.returncode == 0, done.stderr
+    assert "deprecated" in done.stderr
+    assert "-DGGML_VULKAN=ON" in log.splitlines()[0]
+    assert manifest["profile"] == new
+    assert manifest["build_id"].startswith(f"{new}-")
 
 
 def test_abi_gate_knows_the_profile() -> None:
@@ -252,7 +270,7 @@ _CUDA_PROFILES = {"cuda-3060", "cuda-3060-server", "p2fork", "p2fork-server"}
 
 def _vulkan_profiles() -> set[str]:
     """The profiles in the Vulkan flag arm of the build script."""
-    arm = re.search(r"\n  (vulkan-mi25 \|[^)]*)\)\n", _SCRIPT.read_text())
+    arm = re.search(r"\n  (vulkan \|[^)]*)\)\n", _SCRIPT.read_text())
     assert arm is not None
     return {part.strip() for part in arm.group(1).split("|")}
 
@@ -302,7 +320,7 @@ def test_server_cells_name_a_server_profile() -> None:
     server_cells = [c for c in _gpu_cells() if c[1] != "bench" and c[2].endswith("-server")]
     assert {c[0] for c in server_cells} == {"build.yml", "bindgen.yml", "suites.yml"}
     for _, _, profile in server_cells:
-        assert profile == "vulkan-mi25-p2fork-server"
+        assert profile == "vulkan-p2fork-server"
 
 
 def test_bindgen_smoke_runs_on_the_vulkan_library_cell() -> None:
@@ -324,7 +342,7 @@ def test_server_suite_fails_loudly_without_nanbeige_inventory(tmp_path: Path) ->
     """The p2-server-seq-routing cell cannot pass or skip on a machine with no nanbeige model."""
     out = tmp_path / "out"
     (out / "lib").mkdir(parents=True)
-    manifest = {"features": ["p2-mixed-batch-lora"], "profile": "vulkan-mi25-p2fork-server"}
+    manifest = {"features": ["p2-mixed-batch-lora"], "profile": "vulkan-p2fork-server"}
     (out / "build-manifest.json").write_text(json.dumps(manifest))
     env = {k: v for k, v in os.environ.items() if not k.startswith("MODEL_NANBEIGE")}
     done = subprocess.run(
@@ -378,9 +396,9 @@ _ALL_PROFILES = [
     "cuda-3060-server",
     "p2fork",
     "p2fork-server",
-    "vulkan-mi25",
-    "vulkan-mi25-server",
-    "vulkan-mi25-p2fork-server",
+    "vulkan",
+    "vulkan-server",
+    "vulkan-p2fork-server",
     "vulkan-p2fork",
 ]
 

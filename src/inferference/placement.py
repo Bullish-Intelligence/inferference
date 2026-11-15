@@ -449,8 +449,8 @@ class BudgetError(PlacementError):
 def sysfs_free_mib(card: int) -> tuple[float, float]:
     """(total, free) VRAM in MiB for a DRM card, from amdgpu sysfs.
 
-    ROCm is not installed on this rig by design (gfx900 was dropped after ROCm
-    5.7), so there is no rocm-smi to ask; sysfs is the vendor-truthful source and
+    ROCm is not installed on this rig by design (the Vulkan baseline needs none),
+    so there is no rocm-smi to ask; sysfs is the vendor-truthful source and
     is what ``ci/runner/gpu-lease.sh`` reads too.
     """
     base = Path(f"/sys/class/drm/card{card}/device")

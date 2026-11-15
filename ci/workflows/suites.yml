@@ -14,7 +14,7 @@
 #     [self-hosted, gpu, vulkan], lease-serialized (ci/runner/gpu-lease.sh), one card pinned.
 #   * The GPU library cells build the vulkan-p2fork profile (the P2 fork library
 #     for Vulkan). The p2-server-seq-routing cell builds the Vulkan server
-#     profile vulkan-mi25-p2fork-server, because the suite needs bin/llama-server.
+#     profile vulkan-p2fork-server, because the suite needs bin/llama-server.
 #   * p2-server-seq-routing does not apply to a host with no nanbeige-architecture
 #     model. Its suite.json names the role "nanbeige". On such a host
 #     MODEL_NANBEIGE is unset. The cell stays. After its
@@ -112,7 +112,7 @@ jobs:
           # until a session compared branches.
           - suite: p2-server-seq-routing
             ref: integration
-            profile: vulkan-mi25-p2fork-server
+            profile: vulkan-p2fork-server
             runner: [self-hosted, gpu, vulkan]
             gpu: true
     runs-on: ${{ matrix.runner }}

@@ -26,18 +26,25 @@ from inferference.placement import (
     resolve_auto_devices,
 )
 
-# MEASURED on one MI25 at ctx_per_lane = 4096, from sysfs VRAM delta (the card's
+# MEASURED on one 16 GiB card (an AMD Instinct MI25, since replaced by the V620)
+# at ctx_per_lane = 4096, from sysfs VRAM delta (the card's
 # own accounting), NOT from summing the server log's buffer sizes. The log
 # understates by an amount that grows per lane; budgeting from it declared a
 # 16-lane Gemma placement that then spilled to host memory.
 DENSE_3B = Footprint(ctx_per_lane=4096, base_mib=2317.7, per_lane_mib=704.3)
 SWA_12B = Footprint(ctx_per_lane=4096, base_mib=8322.0, per_lane_mib=544.0)
 
-MI25_TOTAL = 16368.0
+# The VRAM of the 16 GiB card that took the measurements above. Every placement
+# test below keeps this size on purpose: the 16-lane spill and the best-fit
+# packing cases are only meaningful at it. The cards of the rig now are AMD
+# Radeon Pro V620 with 32 GB each. V620_TOTAL_MIB is the sysfs VRAM total of one
+# (read on the rig).
+SMALL_CARD_TOTAL_MIB = 16368.0
+V620_TOTAL_MIB = 30704.0
 
 
 def _card(_: int) -> tuple[float, float]:
-    return MI25_TOTAL, MI25_TOTAL
+    return SMALL_CARD_TOTAL_MIB, SMALL_CARD_TOTAL_MIB
 
 
 @pytest.mark.parametrize(
@@ -68,7 +75,12 @@ def test_footprint_predicts_the_observed_16_lane_spill() -> None:
     says it needs ~17 GiB on a 16368 MiB card. The budget must land on the side
     that refuses.
     """
-    assert SWA_12B.total_mib(16) > MI25_TOTAL
+    assert SWA_12B.total_mib(16) > SMALL_CARD_TOTAL_MIB
+
+
+def test_the_observed_16_lane_spill_fits_on_a_v620() -> None:
+    """The 16-lane Gemma placement that spilled on a 16 GiB card fits in 32 GB, with room to spare."""
+    assert SWA_12B.total_mib(16) + 512 < V620_TOTAL_MIB
 
 
 def test_both_architectures_cost_kv_per_lane() -> None:
@@ -330,16 +342,16 @@ def test_a_comma_in_an_adapter_path_is_refused_not_silently_truncated() -> None:
 # automatic placement: ONE CARD unless the operator says otherwise
 # --------------------------------------------------------------------------- #
 
-_TWO_MI25 = [Device(id="Vulkan0", card=0, reserve_mib=512), Device(id="Vulkan1", card=1, reserve_mib=512)]
+_TWO_SMALL_CARDS = [Device(id="Vulkan0", card=0, reserve_mib=512), Device(id="Vulkan1", card=1, reserve_mib=512)]
 
 
 def _free(_: int) -> tuple[float, float]:
-    return MI25_TOTAL, MI25_TOTAL
+    return SMALL_CARD_TOTAL_MIB, SMALL_CARD_TOTAL_MIB
 
 
 def _auto(models: list[str], explicit: list[Resident] | None = None) -> Placement:
     return Placement(
-        devices=_TWO_MI25,
+        devices=_TWO_SMALL_CARDS,
         resident=[Resident(model=m) for m in models] + (explicit or []),
         router=RouterConfig(models_max=8),
     )
@@ -370,7 +382,7 @@ def test_auto_respects_a_card_the_operator_already_claimed() -> None:
     """An explicit placement is charged first; auto works around it."""
     specs = {"pinned": _spec("pinned", SWA_12B, lanes=8), "auto": _spec("auto", SWA_12B, lanes=8)}
     placement = Placement(
-        devices=_TWO_MI25,
+        devices=_TWO_SMALL_CARDS,
         resident=[Resident(model="pinned", device="Vulkan1"), Resident(model="auto")],
         router=RouterConfig(models_max=8),
     )
@@ -398,7 +410,7 @@ def test_the_refusal_says_how_to_span_cards_on_purpose() -> None:
 def test_explicit_placements_are_left_exactly_alone() -> None:
     specs = {"m": _spec("m", DENSE_3B)}
     placement = Placement(
-        devices=_TWO_MI25,
+        devices=_TWO_SMALL_CARDS,
         resident=[Resident(model="m", device=["Vulkan0", "Vulkan1"], tensor_split=[50, 50])],
         router=RouterConfig(models_max=1),
     )

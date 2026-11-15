@@ -31,7 +31,7 @@ The emitter is `ci/build/build-llamacpp.sh`.
 | `repo` | string | git remote the source tree came from (defaults to the fork `https://github.com/Bullish-Design/llama-infernal`; `--repo` overrides) | no |
 | `ref_requested` | string | the `--ref` value as given (branch name, tag, sha, or `local:path`) | no |
 | `ref_built` | string | short sha of the checked-out tip actually built (a branch ref resolves to its tip) | no |
-| `profile` | string | build profile: `cpu-light` / `cuda-3060` / `cuda-3060-server` / `p2fork` / `p2fork-server` / `vulkan-mi25` / `vulkan-mi25-server` / `vulkan-mi25-p2fork-server` / `vulkan-p2fork` | no (but is the `build_id` fallback, below) |
+| `profile` | string | build profile: `cpu-light` / `cuda-3060` / `cuda-3060-server` / `p2fork` / `p2fork-server` / `vulkan` / `vulkan-server` / `vulkan-p2fork-server` / `vulkan-p2fork` | no (but is the `build_id` fallback, below). The old names `vulkan-mi25`, `vulkan-mi25-server` and `vulkan-mi25-p2fork-server` are aliases. The build script maps them to the new names. An older manifest keeps its old name, and the readers map it (`inferference.build_profiles`). |
 | `cmake_flags` | string | the full cmake flag set used | no |
 | `ggml_lib` | string | basename of the built `libggml.so.<ver>` (e.g. `libggml.so.0.16.0`) | no |
 | `ggml_version` | string | same as `ggml_lib` — **read** | **yes** |
@@ -238,12 +238,12 @@ enforces this.
 | Workflow | Cell | Profile | Why it fits |
 |---|---|---|---|
 | `build.yml` | build / vulkan-p2fork | `vulkan-p2fork` | the fork library and headers |
-| `build.yml` | build / server | `vulkan-mi25-p2fork-server` | `bin/llama-server`, `server_built true` |
+| `build.yml` | build / server | `vulkan-p2fork-server` | `bin/llama-server`, `server_built true` |
 | `bindgen.yml` | bindgen / GPU library | `vulkan-p2fork` | headers for the cdef, libs for SMOKE |
-| `bindgen.yml` | bindgen / server | `vulkan-mi25-p2fork-server` | same libllama, same ABI anchor |
+| `bindgen.yml` | bindgen / server | `vulkan-p2fork-server` | same libllama, same ABI anchor |
 | `bench.yml` | bench | `vulkan-p2fork` | the runners load the library only |
 | `suites.yml` | the GPU library suites | `vulkan-p2fork` | `run-suite.sh --out` reads `lib/` and the manifest |
-| `suites.yml` | `p2-server-seq-routing` | `vulkan-mi25-p2fork-server` | the probe needs `bin/llama-server` |
+| `suites.yml` | `p2-server-seq-routing` | `vulkan-p2fork-server` | the probe needs `bin/llama-server` |
 
 `p2-server-seq-routing` also needs a model of the nanbeige architecture. A host
 with no such model sets no `MODEL_NANBEIGE`. The cell stays, and `run-suite.sh`

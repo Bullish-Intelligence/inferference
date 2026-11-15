@@ -8,7 +8,7 @@
 #
 # Backend. Set MODEA_BACKEND=vulkan for a Vulkan wheel. It selects
 #   CMAKE_ARGS="-DGGML_VULKAN=ON -DGGML_CUDA=OFF"
-# and builds the server with the vulkan-mi25-p2fork-server profile.
+# and builds the server with the vulkan-p2fork-server profile.
 # MODEA_BACKEND=cuda (the default) keeps the historical flags
 #   "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86".
 # A CMAKE_ARGS from the caller wins over both. After the build the script
@@ -57,7 +57,7 @@ PY="${venv}/bin/python"
 backend="${MODEA_BACKEND:-cuda}"
 case "$backend" in
   cuda)   default_cmake_args="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86"; server_profile="p2fork-server" ;;
-  vulkan) default_cmake_args="-DGGML_VULKAN=ON -DGGML_CUDA=OFF";            server_profile="vulkan-mi25-p2fork-server" ;;
+  vulkan) default_cmake_args="-DGGML_VULKAN=ON -DGGML_CUDA=OFF";            server_profile="vulkan-p2fork-server" ;;
   *) echo "!! MODEA_BACKEND must be cuda or vulkan, got '${backend}'" >&2; exit 2 ;;
 esac
 export CMAKE_ARGS="${CMAKE_ARGS:-$default_cmake_args}"

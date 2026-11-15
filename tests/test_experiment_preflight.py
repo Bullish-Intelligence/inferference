@@ -441,6 +441,49 @@ def test_check_build_refuses_a_build_id_mismatch(tmp_path: Path) -> None:
     assert excinfo.value.check == "build"
 
 
+@pytest.mark.parametrize(
+    ("declared", "manifest_id"),
+    [
+        # A spec that names the old profile accepts a manifest with the new one, and the reverse.
+        ("vulkan-mi25-p2fork-server-ecc0cb0d3", "vulkan-p2fork-server-ecc0cb0d3"),
+        ("vulkan-p2fork-server-ecc0cb0d3", "vulkan-mi25-p2fork-server-ecc0cb0d3"),
+    ],
+)
+def test_check_build_accepts_an_old_profile_name_as_the_new_one(
+    tmp_path: Path, declared: str, manifest_id: str
+) -> None:
+    paths, target, spec = _build_host(tmp_path)
+    spec = spec.model_copy(
+        update={
+            "fixed": spec.fixed.model_copy(update={"build": spec.fixed.build.model_copy(update={"build_id": declared})})
+        }
+    )
+    manifest_path = target.server_bin.parent.parent / "build-manifest.json"
+    manifest_path.write_text(json.dumps({"build_id": manifest_id, "features": ["vulkan"]}))
+
+    _preflight(paths, target, spec)
+
+
+def test_check_build_refuses_a_different_commit_under_an_old_profile_name(tmp_path: Path) -> None:
+    paths, target, spec = _build_host(tmp_path)
+    spec = spec.model_copy(
+        update={
+            "fixed": spec.fixed.model_copy(
+                update={
+                    "build": spec.fixed.build.model_copy(update={"build_id": "vulkan-mi25-p2fork-server-ecc0cb0d3"})
+                }
+            )
+        }
+    )
+    manifest_path = target.server_bin.parent.parent / "build-manifest.json"
+    manifest_path.write_text(json.dumps({"build_id": "vulkan-p2fork-server-ffffffff0", "features": ["vulkan"]}))
+
+    with pytest.raises(PreflightRefusal) as excinfo:
+        _preflight(paths, target, spec)
+
+    assert excinfo.value.check == "build"
+
+
 def test_check_build_refuses_a_non_object_manifest(tmp_path: Path) -> None:
     paths, target, spec = _build_host(tmp_path)
     manifest_path = target.server_bin.parent.parent / "build-manifest.json"

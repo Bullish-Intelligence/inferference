@@ -40,19 +40,26 @@
 # Usage:
 #   build-llamacpp.sh --ref <git-ref|local:PATH> \
 #       --profile <cpu-light|cuda-3060|cuda-3060-server|p2fork|p2fork-server
-#                  |vulkan-mi25|vulkan-mi25-server
-#                  |vulkan-mi25-p2fork-server|vulkan-p2fork> [--out DIR]
+#                  |vulkan|vulkan-server
+#                  |vulkan-p2fork-server|vulkan-p2fork> [--out DIR]
 #
 # The vulkan-p2fork profile is the library-only sibling of
-# vulkan-mi25-p2fork-server: the same fork tree, the same Vulkan flags, the same
+# vulkan-p2fork-server: the same fork tree, the same Vulkan flags, the same
 # residency patch, and no server target. It builds the lib set and the headers
 # that ci/runner/run-suite.sh and the ABI gate use. Its name holds no hardware.
 #
-# The vulkan-mi25-p2fork-server profile is the P2 fork's source tree built with
+# The vulkan-p2fork-server profile is the P2 fork's source tree built with
 # the Vulkan backend instead of CUDA: the mixed-batch per-sequence
 # LoRA routing feature is backend-agnostic C++ (it calls only core ggml ops), so
-# it needs no code change to run on the MI25s — only a profile that asks for both
-# axes at once, which no profile did before.
+# it needs no code change to run on any Vulkan GPU — only a profile that asks for
+# both axes at once, which no profile did before.
+#
+# OLD PROFILE NAMES. The profiles vulkan-mi25, vulkan-mi25-server and
+# vulkan-mi25-p2fork-server are aliases. They name the first cards of the rig.
+# The rig now has two AMD Radeon Pro V620 cards, and the flags never depended on
+# the card. The script maps each alias to its new name, so the manifest profile
+# and the out dir carry the new name. Recorded build ids that start with an old
+# name stay valid: inferference.build_profiles maps them in the readers.
 #
 # The p2fork-server profile is p2fork plus the server binary
 # (the server sequence-routing build). It shares p2fork's CUDA flags, its src
@@ -76,6 +83,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# --- profile aliases ----------------------------------------------------------
+# Map an old profile name to its hardware-neutral name before any other use.
+# Keep this table in step with PROFILE_ALIASES in src/inferference/build_profiles.py.
+case "$PROFILE" in
+  vulkan-mi25)               new_profile="vulkan" ;;
+  vulkan-mi25-server)        new_profile="vulkan-server" ;;
+  vulkan-mi25-p2fork-server) new_profile="vulkan-p2fork-server" ;;
+  *)                         new_profile="" ;;
+esac
+if [[ -n "$new_profile" ]]; then
+  echo ">> profile ${PROFILE} is an alias, deprecated: using ${new_profile}" >&2
+  PROFILE="$new_profile"
+fi
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="${here}/.llamacpp-builds"
 mkdir -p "$work"
@@ -85,14 +106,14 @@ mkdir -p "$work"
 # default, same fail-closed provenance checks, same seq_adapter_routing=true.
 # It differs only in what cmake builds. Deriving two booleans here keeps every
 # downstream `p2fork` test in one place instead of five string compares.
-# vulkan-mi25-p2fork-server is the same family again: the P2 source tree, built
+# vulkan-p2fork-server is the same family again: the P2 source tree, built
 # for Vulkan instead of CUDA. The source-tree axis (is_p2fork) and
 # the server axis (build_server) are already derived independently here; only the
 # flag `case` below was flat, so the profile is added there too rather than
 # refactored — the two axes that matter are already separate.
 case "$PROFILE" in
-  p2fork | p2fork-server | vulkan-mi25-p2fork-server | vulkan-p2fork) is_p2fork=1 ;;
-  *)                                                                  is_p2fork=0 ;;
+  p2fork | p2fork-server | vulkan-p2fork-server | vulkan-p2fork) is_p2fork=1 ;;
+  *)                                                              is_p2fork=0 ;;
 esac
 build_server=$([[ "$PROFILE" == *-server ]] && echo 1 || echo 0)
 
@@ -285,14 +306,15 @@ case "$PROFILE" in
     flags=( "${common[@]}" -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
             -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF )
     ;;
-  vulkan-mi25 | vulkan-mi25-server | vulkan-mi25-p2fork-server | vulkan-p2fork)
-    # AMD Instinct MI25 (Vega 10 / gfx900), two cards, capped at 110 W.
+  vulkan | vulkan-server | vulkan-p2fork-server | vulkan-p2fork)
+    # Vulkan build for any Vulkan GPU. The rig has two AMD Radeon Pro V620
+    # cards (RDNA2, Navi21, gfx1030). The first cards of the rig were AMD
+    # Instinct MI25 (Vega 10, gfx900).
     #
-    # WHY VULKAN AND NOT ROCM/HIP: ROCm dropped gfx900 after 5.7, so a HIP build
-    # of this tree needs an out-of-support rocBLAS built for a target nixpkgs
-    # does not ship. ggml's Vulkan backend runs on mesa's RADV driver, which
-    # already enumerates both cards on this rig with no driver install. That is
-    # what makes this a baseline spike; HIP is the optimization session's lever.
+    # WHY VULKAN AND NOT ROCM/HIP: the build needs no ROCm install. ggml's
+    # Vulkan backend runs on mesa's RADV driver, which already enumerates both
+    # cards on this rig with no driver install. The MI25 had a second reason:
+    # ROCm dropped gfx900 after 5.7. HIP stays the optimization session's lever.
     #
     # No -DCMAKE_CUDA_ARCHITECTURES analogue exists: the Vulkan backend compiles
     # one SPIR-V shader set (glslc, from the devenv `shaderc` package) and picks
@@ -301,7 +323,7 @@ case "$PROFILE" in
     #
     # GGML_CUDA is pinned OFF rather than left unset: this rig still carries the
     # CUDA toolkit in devenv, and an auto-detected CUDA backend in a lib set
-    # labelled "vulkan-mi25" would be a manifest that lies about what it runs on.
+    # labelled "vulkan" would be a manifest that lies about what it runs on.
     flags=( "${common[@]}" -DGGML_CUDA=OFF -DGGML_VULKAN=ON )
     if (( build_server )); then
       # Same UI reasoning as the CUDA server profiles: no npm, no Hugging Face

@@ -155,8 +155,8 @@ nobody chose.
 # NVIDIA (compute capability 8.6)
 ci/build/build-llamacpp.sh --ref <git-ref> --profile cuda-3060-server
 
-# AMD Vega / gfx900 via Vulkan
-ci/build/build-llamacpp.sh --ref <git-ref> --profile vulkan-mi25-server
+# Any Vulkan GPU (AMD Radeon Pro V620 on the reference rig)
+ci/build/build-llamacpp.sh --ref <git-ref> --profile vulkan-server
 
 # CPU only
 ci/build/build-llamacpp.sh --ref <git-ref> --profile cpu-light

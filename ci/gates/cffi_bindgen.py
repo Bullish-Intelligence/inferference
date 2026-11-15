@@ -59,15 +59,16 @@ PROFILE_DEFINES: dict[str, list[tuple[str, str | None]]] = {
     # this comment claims was not enforced anywhere, and now it is, below.
     "cuda-3060-server": [("GGML_USE_CUDA", "1")],
     "p2fork-server": [("GGML_USE_CUDA", "1")],
-    # AMD MI25 (Vega 10 / gfx900) Vulkan libs. No define is forwarded, and that
+    # Vulkan libs for any Vulkan GPU (AMD Radeon Pro V620 on the reference rig).
+    # No define is forwarded, and that
     # is deliberate rather than an omission: GGML_USE_VULKAN gates nothing in the
     # PUBLIC headers this cdef compiles against. llama.h and ggml.h describe the
     # same ABI whichever backend is compiled in — which is the whole reason a
     # Vulkan build of the anchor stays usable by llama-cpp-python 0.3.34's
     # ctypes. If a future ref makes a public struct backend-conditional, this
     # gate fails to compile, which is exactly the drift tripwire firing.
-    "vulkan-mi25": [],
-    "vulkan-mi25-server": [],
+    "vulkan": [],
+    "vulkan-server": [],
     # The P2 fork's tree built for Vulkan. Vulkan, so no define,
     # for the same reason as the two above. It is NOT given GGML_USE_CUDA even
     # though the sibling `p2fork` profiles are: those forward it because they are
@@ -77,6 +78,12 @@ PROFILE_DEFINES: dict[str, list[tuple[str, str | None]]] = {
     #
     # This lib DOES carry the fork symbols, so run the gate WITHOUT
     # --no-fork-symbols against it; that flag is for probing a stock tree.
+    "vulkan-p2fork-server": [],
+    # Old names of the three Vulkan profiles above. build-llamacpp.sh maps them
+    # to the new names. A recorded run can still pass one, so the gate keeps
+    # accepting them.
+    "vulkan-mi25": [],
+    "vulkan-mi25-server": [],
     "vulkan-mi25-p2fork-server": [],
     # The library-only Vulkan P2 profile: same fork tree and same flags as the
     # server profile above, no server target. Vulkan, so no define.

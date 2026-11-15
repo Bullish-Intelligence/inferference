@@ -33,7 +33,7 @@ env:
 
 # Every cell builds `integration`:
 # it carries every fix, so a tripwire on any other branch measured a tree
-# nothing ships. vulkan-mi25-p2fork-server is here because the routed server
+# nothing ships. vulkan-p2fork-server is here because the routed server
 # links the same libllama and must clear the same ABI anchor. The GPU cells name
 # Vulkan profiles, the only GPU profiles this host can build. The CUDA profiles
 # p2fork and p2fork-server stay in the build script and in cffi_bindgen.py.
@@ -50,7 +50,7 @@ jobs:
             profile: vulkan-p2fork
             runner: [self-hosted, gpu, vulkan]
           - ref: integration
-            profile: vulkan-mi25-p2fork-server
+            profile: vulkan-p2fork-server
             runner: [self-hosted, gpu, vulkan]
     runs-on: ${{ matrix.runner }}
     name: bindgen (${{ matrix.ref }} / ${{ matrix.profile }})

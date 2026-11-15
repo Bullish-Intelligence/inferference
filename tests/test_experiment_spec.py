@@ -132,11 +132,11 @@ def test_build_id_and_features_round_trip_and_default_to_none() -> None:
     assert spec.fixed.build.features is None
 
     raw = _spec_dict()
-    raw["fixed"]["build"]["build_id"] = "vulkan-mi25-p2fork-server-ecc0cb0d3"
+    raw["fixed"]["build"]["build_id"] = "vulkan-p2fork-server-ecc0cb0d3"
     raw["fixed"]["build"]["features"] = ["flash-attn", "lora-seq-routing"]
     spec = ExperimentSpec.model_validate(raw)
 
-    assert spec.fixed.build.build_id == "vulkan-mi25-p2fork-server-ecc0cb0d3"
+    assert spec.fixed.build.build_id == "vulkan-p2fork-server-ecc0cb0d3"
     assert spec.fixed.build.features == ("flash-attn", "lora-seq-routing")
 
 

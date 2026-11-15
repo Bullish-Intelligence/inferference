@@ -39,7 +39,7 @@ selects another memory type.
 The patch also makes `get_host_buffer_type` return `nullptr` for every Vulkan
 device. A patched build offers no pinned host buffer type on any Vulkan device.
 
-The build profiles `vulkan-p2fork`, `vulkan-mi25-p2fork-server` and the other
+The build profiles `vulkan-p2fork`, `vulkan-p2fork-server` and the other
 Vulkan profiles name no hardware, but a patched build only runs on a device that
 meets this requirement. Check a new device before you serve from it: list its memory types (for
 example with `vulkaninfo`) and look for one with all three flags and a heap as

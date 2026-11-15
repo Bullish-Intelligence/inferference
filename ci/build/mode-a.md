@@ -89,7 +89,7 @@ inventory: `ci/runner/rig-env.sh` exports `MODEL_DEFAULT`. Do not type a model n
    The same rule holds for the library venv (`LIBRARY_BASE_PYTHON`) that runs the suites.
 
    `MODEA_SKIP_SERVER=1` builds only the wheel. Build the server with
-   `ci/build/build-llamacpp.sh --ref <fork commit> --profile vulkan-mi25-p2fork-server`.
+   `ci/build/build-llamacpp.sh --ref <fork commit> --profile vulkan-p2fork-server`.
    To build the fork library alone (no wheel, no server), use
    `ci/build/build-llamacpp.sh --ref <fork commit> --profile vulkan-p2fork`.
    It applies the same residency patch. Its out dir feeds `ci/runner/run-suite.sh --out`
@@ -102,7 +102,7 @@ inventory: `ci/runner/rig-env.sh` exports `MODEL_DEFAULT`. Do not type a model n
    WHEEL_LIB="$PWD/ci/modea/.venv/lib/python3.13/site-packages/llama_cpp/lib"
    ci/gates/.venv/bin/python ci/gates/cffi_bindgen.py \
      --lib-dir "$WHEEL_LIB" --include-dir <server out>/include \
-     --profile vulkan-mi25-p2fork-server --out-dir <scratch dir> --check        # exit 0
+     --profile vulkan-p2fork-server --out-dir <scratch dir> --check        # exit 0
    ```
 
 3. ABI smoke on the wheel's libs. GPU. The lease pins one card. The gate then
@@ -121,7 +121,7 @@ inventory: `ci/runner/rig-env.sh` exports `MODEL_DEFAULT`. Do not type a model n
 
    ```bash
    GPU_LEASE_CARDS=<card> GPU_LEASE_TIMEOUT=10 ci/runner/gpu-lease.sh <MiB> -- \
-     ci/gates/vulkan_mi25_smoke.sh --out <server out> --model "$MODEL_DEFAULT"      # exit 0
+     ci/gates/vulkan_smoke.sh --out <server out> --model "$MODEL_DEFAULT"      # exit 0
    ```
 
 5. Suites. GPU. `ci/runner/run-suite.sh --suite <name> --out <server out>`, under the
@@ -225,9 +225,9 @@ server on one card, and preemption is not implemented.
 
 ```bash
 # build the routed server from a gated commit …
-ci/build/build-llamacpp.sh --ref integration --profile vulkan-mi25-p2fork-server
+ci/build/build-llamacpp.sh --ref integration --profile vulkan-p2fork-server
 # … then publish it out of the prunable build garage
-ci/build/mode-a-server.sh --out ci/build/.llamacpp-builds/out-vulkan-mi25-p2fork-server-<sha>[-residency-<hash>]
+ci/build/mode-a-server.sh --out ci/build/.llamacpp-builds/out-vulkan-p2fork-server-<sha>[-residency-<hash>]
 ```
 
 On a CUDA host, use `--profile p2fork-server` and the out dir `out-p2fork-server-<sha>`.
@@ -287,12 +287,14 @@ The flake exposes it as `packages.server`: `nix build .#server`. The check
 fast. `packages.default` holds the services. Set `INFERFERENCE_SERVER_DIR` to
 the `.#server` output to start the router with this server.
 
-The cards of the live host are AMD Radeon Pro V620. The name `vulkan-mi25-...`
-in the profile and in the build id is a historical label from the first
-cards. It does not name the hardware. The launcher and the manifests use the
-name, so it stays the same.
+The cards of the live host are two AMD Radeon Pro V620 (RDNA2, Navi21, gfx1030).
+The first cards of the host were AMD Instinct MI25. The profile and the build id
+were `vulkan-mi25-p2fork-server` until the V620 cards replaced them. The profile
+is now `vulkan-p2fork-server`. It names no hardware. The build script accepts the
+old name as an alias. A recorded build id that starts with the old name stays
+valid: the experiment preflight maps it to the new name.
 
-A Nix build runs no GPU job. Run `ci/gates/vulkan_mi25_smoke.sh --out <store
+A Nix build runs no GPU job. Run `ci/gates/vulkan_smoke.sh --out <store
 path>` once on a free card before you make this build the live server.
 
 ## The manifest gap, closed

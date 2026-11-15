@@ -53,6 +53,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
+from ..build_profiles import canonical_build_id
 from ..placement import Device, Footprint, ModelSpec, PlacementError
 from ..pptable import FieldDelta, PPTableError, PptThrottler, TempSensor
 from ..pptable import decode as pptable_decode
@@ -486,7 +487,8 @@ def preflight(
             _refuse("build", "fixed.build.manifest_must_match is true, but fixed.build.build_id is not declared")
         if not isinstance(manifest_build_id, str) or not manifest_build_id:
             _refuse("build", f"build manifest {manifest_path} has no non-empty string build_id")
-        if declared_build_id != manifest_build_id:
+        # An old profile prefix (`vulkan-mi25-...`) names the same build as the new one.
+        if canonical_build_id(declared_build_id) != canonical_build_id(manifest_build_id):
             _refuse("build", f"build_id mismatch: declared {declared_build_id}, manifest {manifest_build_id}")
         if spec.fixed.build.features is not None:
             if not isinstance(manifest_features, list) or not all(isinstance(item, str) for item in manifest_features):

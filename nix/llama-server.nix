@@ -1,7 +1,7 @@
 # The Mode A llama-server as a Nix derivation.
 #
 # This builds what `ci/build/build-llamacpp.sh --profile
-# vulkan-mi25-p2fork-server` builds, without a hand-built directory in the
+# vulkan-p2fork-server` builds, without a hand-built directory in the
 # checkout. The profile is the llama-infernal fork at one commit, plus
 # `ci/build/patches/vulkan-residency.patch`, built with Vulkan and no CUDA.
 #
@@ -46,7 +46,7 @@ let
   forkRepo = "https://github.com/Bullish-Design/llama-infernal";
   shortRev = builtins.substring 0 9 rev;
   patchSha = builtins.hashFile "sha256" residencyPatch;
-  profile = "vulkan-mi25-p2fork-server";
+  profile = "vulkan-p2fork-server";
   buildId = "${profile}-${shortRev}-residency-${builtins.substring 0 12 patchSha}";
   # The P2 patch provenance that the fork commit messages carry.
   p2Sha = "8b618ac212fc667188cef8abad8054f40ea5e7c67b2023f0fcb6466e534ff752";

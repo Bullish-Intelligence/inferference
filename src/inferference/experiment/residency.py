@@ -5,7 +5,7 @@ A spilled load returns `{"success": true}`, reaches status `loaded`, and still
 names the right Vulkan device in every layer-assignment line. The server log
 and the `--list-devices` text are not proof on their own; sysfs VRAM and GTT
 accounting are. This module runs the ten checks that together ARE proof, ports
-the device-to-PCI extraction byte-for-byte from `ci/gates/vulkan_mi25_smoke.sh`
+the device-to-PCI extraction byte-for-byte from `ci/gates/vulkan_smoke.sh`
 lines 147-149, and corrects three facts an earlier harness got wrong.
 
 Corrected facts (verified against a real stored run artifact):
@@ -135,7 +135,7 @@ def memory_snapshot(card: int, drm_root: Path = Path("/sys/class/drm")) -> Memor
 
 
 def extract_used_pci(log: str, logical_device: str = "Vulkan0") -> str | None:
-    """Port of `ci/gates/vulkan_mi25_smoke.sh:147-149`'s PCI extraction, exactly.
+    """Port of `ci/gates/vulkan_smoke.sh:147-149`'s PCI extraction, exactly.
 
     Finds the first line matching
     `using device <logical_device> \\(.*\\) \\([0-9a-fA-F:.]+\\)`, takes ONLY the

@@ -49,10 +49,10 @@
     pkgs.cudaPackages.cuda_cccl
     pkgs.cudaPackages.libcublas
     pkgs.cudaPackages.cuda_nvrtc
-    # Vulkan build toolchain — the AMD MI25 (Vega 10 / gfx900) profiles.
-    # ROCm dropped gfx900 after 5.7, so the MI25 baseline goes through ggml's
-    # Vulkan backend on mesa's RADV driver, which enumerates both cards today
-    # (deviceName "AMD Radeon Graphics (RADV VEGA10)"). GGML_VULKAN=ON needs the
+    # Vulkan build toolchain — the Vulkan profiles. The rig has two AMD Radeon
+    # Pro V620 cards (RDNA2, Navi21, gfx1030). They go through ggml's Vulkan
+    # backend on mesa's RADV driver, which enumerates both cards today
+    # (deviceName "AMD Radeon Pro V620 (RADV NAVI21)"). GGML_VULKAN=ON needs the
     # headers, the loader, and glslc (shaderc) to compile the shader set at
     # build time; vulkan-tools gives `vulkaninfo` for the device probe.
     pkgs.vulkan-headers
