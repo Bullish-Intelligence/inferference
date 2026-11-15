@@ -4,7 +4,7 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project uses [Semantic Versioning](https://semver.org/). Before 1.0, a minor
 release can break compatibility. Each break has a migration step below.
 
-## Unreleased
+## 0.4.2
 
 ### Added
 
@@ -12,6 +12,12 @@ release can break compatibility. Each break has a migration step below.
   `uv.lock` (uv2nix, `python313` from nixpkgs). Outputs: `packages.default`
   (the wrapped launchers and tools), `packages.env` (the locked core env) and
   `checks.package` and `checks.lock`.
+- Packaging: `packages.server` builds the Mode A `llama-server` with Nix
+  (`nix/llama-server.nix`). It uses the llama-infernal fork at one commit, the
+  residency patch, and Vulkan. The output has the layout of a published
+  artefact, with a `build-manifest.json` and a `modea-provenance.json`. Set
+  `INFERFERENCE_SERVER_DIR` to the output. `checks.server-eval` evaluates it
+  and does not build it.
 - Serving: `inferference-reconcile` and `inferference-balancer` are console
   scripts. The reconcile logic moved to `inferference.reconcile_cli`.
   `ci/runner/inferference-reconcile.py` stays as a thin shim for development.
@@ -21,8 +27,10 @@ release can break compatibility. Each break has a migration step below.
 
 ### Changed
 
-- Serving: the live services run from the Nix package. The checkout and the
-  library venv are for development and gates only.
+- Serving: the live services and the `llama-server` come from the Nix flake
+  (`packages.default`, `packages.server`). The checkout and the library venv are
+  for development and gates only. To deploy, pin a release tag (the basix
+  input).
 - The launchers no longer put the checkout `src/` on the Python path. They use
   `INFERFERENCE_PYTHON`. They use the checkout venv only when it is unset.
 - Verify runs `uv lock --check` and evaluates the flake outputs.

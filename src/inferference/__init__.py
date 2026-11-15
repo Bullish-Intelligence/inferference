@@ -1,6 +1,6 @@
 """Shared boundary types and runtime facts for the llama.cpp teaching core."""
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 from .benchmark import BenchmarkRecord, BenchmarkTimer, write_benchmark_record
 from .capabilities import (
