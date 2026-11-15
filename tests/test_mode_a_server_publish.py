@@ -146,3 +146,34 @@ def test_refuses_an_artefact_with_no_server(tmp_path: Path) -> None:
     result = _run(script, out, "--no-current", "--dest-root", str(dest_root))
     assert result.returncode != 0
     assert not (dest_root / _BUILD_ID).exists()
+
+
+def test_publishes_a_nix_wrapper_whose_files_are_links_into_the_compile_output(tmp_path: Path) -> None:
+    script, compiled, dest_root = _make_repo(tmp_path)
+    # Rebuild the layout of `packages.server`: bin/llama-server and lib are links.
+    wrapper = tmp_path / "wrapper"
+    (wrapper / "bin").mkdir(parents=True)
+    (wrapper / "bin" / "llama-server").symlink_to(compiled / "bin" / "llama-server")
+    (wrapper / "lib").symlink_to(compiled / "lib")
+    (wrapper / "build-manifest.json").write_text((compiled / "build-manifest.json").read_text())
+    (wrapper / "LICENSE.llama.cpp").symlink_to(_licence(compiled))
+    result = _run(script, wrapper, "--no-current", "--release", "--dest-root", str(dest_root))
+    assert result.returncode == 0, result.stderr
+    published = dest_root / _BUILD_ID
+    assert (published / "bin" / "llama-server").is_file()
+    assert not (published / "bin" / "llama-server").is_symlink()
+    assert not (published / "lib").is_symlink()
+    assert not (published / "LICENSE.llama.cpp").is_symlink()
+    assert (published / "lib" / "libllama.so").readlink() == Path("libllama.so.0")
+    prov = json.loads((published / "modea-provenance.json").read_text())
+    assert set(prov["artefact_sha256"]) == {
+        "bin/llama-server",
+        "lib/libggml-vulkan.so",
+        "lib/libllama.so.0",
+    }
+
+
+def _licence(compiled: Path) -> Path:
+    path = compiled / "LICENSE.source"
+    path.write_text("MIT License\n")
+    return path

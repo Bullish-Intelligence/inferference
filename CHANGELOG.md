@@ -4,7 +4,7 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project uses [Semantic Versioning](https://semver.org/). Before 1.0, a minor
 release can break compatibility. Each break has a migration step below.
 
-## Unreleased
+## 0.4.3
 
 ### Changed
 
@@ -34,8 +34,26 @@ release can break compatibility. Each break has a migration step below.
 - Packaging: the compile builds the `llama-server` target only. The other tools
   (cli, bench, quantize, imatrix, tts) and the `llama` app are not built.
   `bin/` of `packages.server` holds `llama-server` only.
-- Packaging: `llama-server-bin.nix` takes `stdenv` as an argument. Use
-  `.override { stdenv = pkgs.ccacheStdenv; }` to compile with ccache.
+- Packaging: `llama-server-bin.nix` takes `stdenv` as an argument. To compile
+  with ccache, a consumer of the flake overrides the compile and keeps the
+  wrapper:
+  `server.override { llama-server-bin = server-bin.override { stdenv = pkgs.ccacheStdenv; }; }`.
+- Verify: `base:check` and `base:test` depend on `setup:sync` and then run the
+  checks. `ty` no longer reads an unsynced venv.
+- Verify: the `test:full` timeout is 520 s, down from 600 s. The suite takes
+  about 260 s on a busy host.
+
+### Fixed
+
+- Tests: each thermal guard test waited 30 s at teardown. The test worker was a
+  bash background job that ignored SIGINT, and the guard relays SIGINT only.
+  The worker is now a Python process with a SIGINT handler, as llama-server
+  has. The teardown waits 10 s and fails the test when the guard does not exit.
+  The guard did not change.
+- Publishing: `ci/build/mode-a-server.sh` copies the target of each link in the
+  artefact. It now publishes `packages.server` (a Nix wrapper with links into
+  `packages.server-bin`) as a tree of files. Before, `cp -a` copied the links,
+  and the published tree pointed back into the Nix store.
 
 ## 0.4.2
 

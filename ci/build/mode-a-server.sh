@@ -123,15 +123,20 @@ echo ">>        -> ${dest}   (profile ${profile}, ref ${ref_built})"
 # --- copy ---------------------------------------------------------------------
 rm -rf "${dest}.tmp"
 mkdir -p "${dest}.tmp"
-cp -a "${OUT}/bin"     "${dest}.tmp/"
-cp -a "${OUT}/lib"     "${dest}.tmp/"
-[[ -d "${OUT}/include" ]] && cp -a "${OUT}/include" "${dest}.tmp/"
-cp -a "$man"           "${dest}.tmp/build-manifest.json"
+# The Nix wrapper (packages.server) holds links into the compile output:
+# bin/llama-server is a link to a file, and lib is a link to a directory. Copy
+# the target of each link, so the published tree holds files and no link leaves it.
+# -L on bin follows the link to the binary. -H on lib and include follows the
+# link to the directory and keeps the links inside it (libllama.so -> libllama.so.0).
+cp -aL "${OUT}/bin"     "${dest}.tmp/"
+cp -aH "${OUT}/lib"     "${dest}.tmp/"
+[[ -d "${OUT}/include" ]] && cp -aH "${OUT}/include" "${dest}.tmp/"
+cp -aL "$man"           "${dest}.tmp/build-manifest.json"
 # The server holds llama.cpp and ggml code. Its licence notice travels with it.
 # A build made before build-llamacpp.sh copied the notice has none; the server then
 # ships without one, and this line says so.
 if [[ -f "${OUT}/LICENSE.llama.cpp" ]]; then
-  cp -a "${OUT}/LICENSE.llama.cpp" "${dest}.tmp/LICENSE.llama.cpp"
+  cp -aL "${OUT}/LICENSE.llama.cpp" "${dest}.tmp/LICENSE.llama.cpp"
 else
   echo "!! ${OUT} has no LICENSE.llama.cpp (it predates the licence copy). Rebuild to ship the notice." >&2
 fi
