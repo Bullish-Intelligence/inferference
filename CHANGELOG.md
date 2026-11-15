@@ -17,6 +17,10 @@ release can break compatibility. Each break has a migration step below.
   load a real model. `library-venv.sh` and `opt:runtime` install `pytest-xdist`
   and `gguf` in the library venv. Before, `opt:runtime` failed to collect three
   test modules that import `gguf`.
+- Tests: `opt:runtime` now passes its `ty check`. Two tests in
+  `tests/test_trace_router.py` replaced `router.C` with a fake by assignment, and
+  `ty` rejected it against the real `llama_cpp` module type. They now use
+  `monkeypatch.setattr`. The checks are the same. The error existed since 0.4.0.
 - Tests: `test_gate_mode_reads_the_loaded_library` hides a libllama that an
   earlier test loaded in the same process. Before, it failed in `opt:runtime`
   when a worker had imported `llama_cpp`.

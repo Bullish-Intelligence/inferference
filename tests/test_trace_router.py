@@ -201,17 +201,18 @@ class _FakeC:
         self.cleared.append((mem, data))
 
 
-def test_reset_state_clears_every_context_with_its_data() -> None:
+def test_reset_state_clears_every_context_with_its_data(monkeypatch: pytest.MonkeyPatch) -> None:
     router = object.__new__(MultiLoRARouter)
-    router.C = _FakeC()
+    fake_c = _FakeC()
+    monkeypatch.setattr(router, "C", fake_c, raising=False)
     router._ctx = {None: "base", "a": "ctx-a"}
     router._seq_ctx = "seq"
     router.reset_state()
-    assert router.C.cleared == [(("mem", "base"), True), (("mem", "ctx-a"), True), (("mem", "seq"), True)]
+    assert fake_c.cleared == [(("mem", "base"), True), (("mem", "ctx-a"), True), (("mem", "seq"), True)]
     router._seq_ctx = None
-    router.C.cleared.clear()
+    fake_c.cleared.clear()
     router.reset_state()
-    assert len(router.C.cleared) == 2
+    assert len(fake_c.cleared) == 2
 
 
 # ---- the cached gates, driven by a router whose legs are scripted ----
@@ -340,14 +341,17 @@ class _RecordingRouter(TraceRouter):
         self.calls.append("reset")
 
 
-def test_cached_state_pairs_resets_first_and_reads_the_cold_probe_ids_in_the_cached_step() -> None:
+def test_cached_state_pairs_resets_first_and_reads_the_cold_probe_ids_in_the_cached_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     router = object.__new__(_RecordingRouter)
     router.__dict__.update(_bare().__dict__)
-    router.C = _StateC()
+    fake_c = _StateC()
+    monkeypatch.setattr(router, "C", fake_c, raising=False)
     router._ctx = {None: "ctx"}
     router._seq_ctx = None
     router.calls = []
-    bridge = _Bridge(router.C)
+    bridge = _Bridge(fake_c)
     pairs = cached_state_pairs(router, bridge, None, [1, 2, 3], [[4], [5]])
     assert router.calls[0] == "reset"
     assert len(pairs) == 2
