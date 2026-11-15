@@ -262,6 +262,29 @@ commit. Without it the two may differ, and the difference is recorded in
 `modea-provenance.json` as `wheel_and_server_same_commit: false` rather than
 left implicit.
 
+### The server as a Nix derivation
+
+`nix/llama-server.nix` builds the same server with Nix. It is a `callPackage`
+file: `pkgs.callPackage ./nix/llama-server.nix { }`. It fetches the fork at the
+pinned commit, applies `ci/build/patches/vulkan-residency.patch`, and builds
+with Vulkan and no CUDA. It reuses the nixpkgs `llama-cpp` recipe. It sets
+`GGML_NATIVE=OFF` and names the x86 flags of the Xeon W-2125 (AVX2, FMA, F16C,
+BMI2, AVX-512 F/DQ/CD/BW/VL).
+
+The output has the layout of a published artefact: `bin/llama-server`, `lib/`,
+`LICENSE.llama.cpp`, `build-manifest.json`, `modea-provenance.json`. The
+manifest keys are the keys above, with one added key, `build_system: "nix"`.
+`vulkan_residency_patch_sha256` is the hash of the patch file in this
+repository. A build fails when the patch file and its recorded hash differ.
+
+The vulkan-loader in the store finds the driver in
+`/run/opengl-driver/share/vulkan/icd.d`. The host fills that directory when
+`hardware.graphics.enable` is set. Point `INFERFERENCE_SERVER_DIR` at the
+store path to use it.
+
+A Nix build runs no GPU job. Run `ci/gates/vulkan_mi25_smoke.sh --out <store
+path>` once on a free card before you make this build the live server.
+
 ## The manifest gap, closed
 
 The manifest does not survive the Mode A copy on its own: `find ci/modea -name
