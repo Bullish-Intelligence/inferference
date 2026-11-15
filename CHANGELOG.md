@@ -4,6 +4,68 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project uses [Semantic Versioning](https://semver.org/). Before 1.0, a minor
 release can break compatibility. Each break has a migration step below.
 
+## 0.4.1
+
+### Added
+
+- Serving: the replica balancer. The router maps one model name to one child.
+  To serve one model from two cards, declare it resident twice under two names.
+  Then add a `balancer:` key to `placement.yaml` with `host`, `port` and
+  `groups`. Each group gives its members one public name. Omit the key for no
+  balancer.
+- Serving: `python -m inferference.balancer --config-dir DIR` runs the
+  balancer. `ci/runner/inferference-balancer-launch.sh` starts it, and its
+  `--check` option validates the config and exits. The balancer reads all
+  settings from `placement.yaml`.
+- Serving: the balancer sends each request for a group to the loaded member
+  with the fewest requests in flight. Equal counts take turns. It polls
+  `GET /models` every 2 s.
+- Serving: before the first byte, a connection failure, a 5xx answer or a 400
+  "model is not loaded" marks the member down until the next poll. The balancer
+  then tries the next member once. After the first byte it never retries.
+- Serving: the balancer passes streams through without buffering. It removes
+  `?autoload` from a client request and never adds it.
+- Serving: `/models` and `/v1/models` list the router entries and one entry per
+  group. `GET /slots?model=<group>` merges the slot lists of the members.
+  `/health` and `/balancer/status` answer for the balancer.
+- Serving: `placement.yaml` refuses a bad group. Every member is a resident
+  model. A member is in one group at most. A group name equals no resident
+  model except its own members. The balancer port differs from the router port
+  on one host.
+- Library: `inferference.config_paths.read_placement()` reads and validates
+  `placement.yaml` only. `BalancerConfig` is the new schema class.
+
+### Changed
+
+- Serving: `resolve_router_url()` returns the balancer URL when `placement.yaml`
+  declares a balancer. Otherwise it returns the router URL as before. Clients
+  use it. Management tools read `router.port`.
+- Serving: the example `placement.example.yaml` puts the router on port 8101
+  and the balancer on port 8100.
+- Serving: the reconcile CLI and `ci/gates/router_stop_gate.sh` no longer fall
+  back to port 8100. They exit with an error when they cannot read
+  `router.port`. Pass `--router URL` or set `INFERFERENCE_ROUTER` to override
+  the reconcile CLI.
+- Serving: the atuin adapter listens on port 8110 by default. It listened on
+  port 8100.
+- Build: the vendor manifest holds the refreshed source hash. The Mode A
+  version tuple holds the patch hash of the current residency patch
+  (`d916a61e...`) and the refreshed source hash.
+
+### Breaking changes and migration
+
+1. **Port 8100.** The example placement moves the router to port 8101 and gives
+   port 8100 to the balancer. A machine without a `balancer:` key keeps the
+   router port that its own `placement.yaml` declares. No code reads 8100 as a
+   default now. To add a balancer, set `router.port` to a new port (8101),
+   add the `balancer:` key with the old router port, then restart the router
+   unit and start the balancer. Point clients at `resolve_router_url()`.
+2. **Management tools.** The reconcile CLI and the router stop gate need a
+   readable `router.port` in `placement.yaml`, or `--router` /
+   `INFERFERENCE_ROUTER`. Fix the config before you run them.
+3. **Atuin adapter.** Pass `--listen` or set `endpoint` in the atuin config if
+   you relied on port 8100. The new default is 8110.
+
 ## 0.4.0
 
 ### Added
