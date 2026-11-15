@@ -180,9 +180,10 @@
       };
 
       "test:full" = {
-        # pytest-xdist runs the tests on one worker per CPU (`-n auto`). `--dist loadgroup` keeps
-        # every test with the same `xdist_group` name on one worker: the thermal guard tests race
-        # real timers and share one group. The serial run took about 4.4 min on a busy host
+        # pyproject.toml `[tool.pytest.ini_options] addopts` makes every pytest run parallel:
+        # `-n auto --dist loadgroup`. One worker per CPU runs the tests. Every test with the same
+        # `xdist_group` name stays on one worker: the thermal guard tests race real timers and
+        # share one group. Pass no `-n` here. The serial run took about 4.4 min on a busy host
         # (1400 tests; the slowest takes under 10 s). The parallel runs took 2 to 3.5 min while
         # the host load average was 30 to 70, so these times are an upper bound. The timeout stays
         # at 520 s until a quiet host gives a final time. The `runtime` marker names the 3 tests
@@ -190,7 +191,7 @@
         exec = ''
           out="''${TESTEE_RUN_DIR:-.devenv/state}"
           mkdir -p "$out"
-          uv run --no-sync python -m pytest -m "not runtime" -n auto --dist loadgroup --junitxml="$out/test:full.junit.xml"
+          uv run --no-sync python -m pytest -m "not runtime" --junitxml="$out/test:full.junit.xml"
         '';
         input.testee = { timeout_s = 520; ignores = unread; };
       };
@@ -206,6 +207,12 @@
           export LD_LIBRARY_PATH="${pkgs.zlib}/lib:${pkgs.gcc.cc.lib}/lib:''${LD_LIBRARY_PATH:-}"
           export LIBRARY_VENV="$DEVENV_ROOT/.devenv/state/library-venv"
           bash ci/runner/library-venv.sh
+          # pyproject.toml addopts runs pytest on `-n auto --dist loadgroup`. This task is parallel
+          # too: it holds no GPU lease and it loads no model. Only the `runtime` tests import torch or
+          # xgrammar (CPU torch), and each worker imports them at most once. A venv that
+          # predates the xdist default needs the plugin and the test import `gguf`, so install both first
+          # (a no-op when present).
+          uv pip install --python "$LIBRARY_VENV/bin/python" "pytest-xdist>=3.8.0" gguf
           "$LIBRARY_VENV/bin/python" -m pytest --junitxml="$out/opt:runtime.junit.xml"
           "$LIBRARY_VENV/bin/ty" check . --python "$LIBRARY_VENV/bin/python"
         '';

@@ -200,8 +200,15 @@ test_log="$(mktemp "${TMPDIR:-/tmp}/run-suite.${suite}.XXXXXX")"
 junit_xml="${test_log}.xml"
 trap 'rm -f "${test_log}" "${junit_xml}"' EXIT
 set +e
-# `-o addopts=` clears the `-q` in pyproject.toml. With both, pytest runs at -qq and
-# prints no "N passed" summary, so the check below fails every passing suite.
+# `-o addopts=` clears the pyproject.toml addopts: `-q -n auto --dist loadgroup`. It does two jobs.
+# 1. With `-q` twice, pytest runs at -qq and prints no "N passed" summary, so the check below
+#    fails every passing suite.
+# 2. It makes every suite SERIAL, an exception to the parallel default. Seven of the eight suites
+#    have env.GPU true. They run under a GPU lease (gpu-serialized.sh) and drive one real device.
+#    The eighth (nanbeige-arch) loads a real GGUF through the native library. Workers would oversubscribe the GPU and the
+#    memory, and parallel runs would break the timing and the thermal readings the suites measure.
+# A caller that knows a suite is safe can pass `-n 2 --dist loadgroup` after the suite args.
+# That needs pytest-xdist in the library venv (library-venv.sh installs it).
 "${library_python}" -m pytest "${suite_dir}/tests" -o addopts= -q -rs --junitxml="${junit_xml}" "$@" 2>&1 | tee "${test_log}"
 rc=${PIPESTATUS[0]}
 set -e

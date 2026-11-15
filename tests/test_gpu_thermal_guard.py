@@ -106,7 +106,7 @@ def test_thermal_trip_returns_distinct_status_and_kills_process_group(tmp_path: 
         stderr=subprocess.STDOUT,
         text=True,
     )
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline and not child_pid_file.exists():
         time.sleep(0.01)
     assert parent_pid_file.exists()
@@ -229,7 +229,7 @@ def test_fan_failure_during_run_returns_safety_status_and_cleans_process_group(t
         stderr=subprocess.STDOUT,
         text=True,
     )
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline and not parent_pid_file.exists():
         time.sleep(0.01)
     assert parent_pid_file.exists()

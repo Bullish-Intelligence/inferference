@@ -179,7 +179,9 @@ uv pip install --python "${venv}/bin/python" \
 # reference-inherited strictness findings validated on exactly this version
 # (fleet v2 migration note, 2026-10-09). pytest-json-report stays for the
 # legacy adapter; Testee 0.5 reads the junitxml the gate now writes.
-uv pip install --python "${venv}/bin/python" pytest pytest-json-report ruff "ty==0.0.65"
+# pytest-xdist is required: pyproject.toml addopts sets `-n auto --dist loadgroup`.
+# gguf is a test import (tests/test_make_arch_lora_probe.py, tests/test_seq_adapter_coverage.py).
+uv pip install --python "${venv}/bin/python" pytest "pytest-xdist>=3.8.0" pytest-json-report gguf ruff "ty==0.0.65"
 
 # CPU-only torch (xgrammar imports it; bench needs it for CUDA sync).
 uv pip install --python "${venv}/bin/python" \

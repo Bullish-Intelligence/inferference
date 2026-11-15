@@ -8,9 +8,20 @@ release can break compatibility. Each break has a migration step below.
 
 ### Changed
 
-- Tests: `test:full` runs on pytest-xdist (`-n auto --dist loadgroup`). The dev
-  group gains `pytest-xdist`. The thermal guard and signal relay tests share the
-  `xdist_group` name `thermal-guard`, so they run on one worker.
+- Tests: every pytest run is parallel by default. `pyproject.toml` sets
+  `addopts = "-q -n auto --dist loadgroup"`, so `test:full`, `opt:runtime`, and a
+  plain `pytest` use pytest-xdist. The dev group gains `pytest-xdist`. The thermal
+  guard and signal relay tests share the `xdist_group` name `thermal-guard`, so
+  they run on one worker. Run `pytest -n 0` to debug serially.
+- Tests: `ci/runner/run-suite.sh` stays serial. Its suites hold a GPU lease or
+  load a real model. `library-venv.sh` and `opt:runtime` install `pytest-xdist`
+  and `gguf` in the library venv. Before, `opt:runtime` failed to collect three
+  test modules that import `gguf`.
+- Tests: `test_gate_mode_reads_the_loaded_library` hides a libllama that an
+  earlier test loaded in the same process. Before, it failed in `opt:runtime`
+  when a worker had imported `llama_cpp`.
+- Tests: the thermal guard tests wait up to 30 s, not 5 s, for the worker pid
+  file. Parallel workers load the host, and the 5 s wait ended early.
 - Tests: a pid file that a test reads is now written in one step (write a
   temporary file, then rename). Before, a test could read an empty pid file.
 - Tests: the experiment tests wait up to 60 s, not 8 s, for a fake server to

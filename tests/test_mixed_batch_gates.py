@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 import warnings
 import zlib
 from collections.abc import Sequence
@@ -194,6 +195,9 @@ def test_gate_mode_reads_the_loaded_library(tmp_path: Path, monkeypatch: pytest.
     (lib / "libggml.so.0").write_text("")
     (lib / "libggml-vulkan.so.0").write_text("")
     monkeypatch.setenv("LLAMA_CPP_LIB_PATH", str(lib))
+    # A libllama that an earlier test loaded in this process wins over the variable. A parallel
+    # worker can hold one, so hide it. The test then reads the variable only.
+    monkeypatch.delitem(sys.modules, "llama_cpp.llama_cpp", raising=False)
     assert gate_mode() == LOGIT_TOLERANCE
     (lib / "libggml-vulkan.so.0").unlink()
     (lib / "libggml-cuda.so.0").write_text("")

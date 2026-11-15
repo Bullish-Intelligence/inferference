@@ -94,7 +94,14 @@ extend-exclude = ["tasks/"]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+# Every pytest run is parallel by default: pytest-xdist starts one worker per CPU (`-n auto`).
+# `--dist loadgroup` keeps every test with one `xdist_group` name on one worker. The thermal
+# guard tests race real timers and share the group `thermal-guard`.
+# Serial run, to debug or to use `--pdb`: `pytest -n 0`. Without the plugin, `-p no:xdist`
+# needs `-o addopts=` too, because the addopts name `-n`.
+# A venv with no pytest-xdist must clear this option: `pytest -o addopts=`.
+# Callers with a GPU lease or one real device set their own `-n` (see ci/runner/run-suite.sh).
+addopts = "-q -n auto --dist loadgroup"
 testpaths = ["tests"]
 # `runtime` marks a test that imports the native stack (llama-cpp-python, xgrammar). The required gate
 # runs `-m "not runtime"`; `opt:runtime` runs every test in the full library venv.

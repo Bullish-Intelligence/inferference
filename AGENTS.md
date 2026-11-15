@@ -103,6 +103,13 @@ uv run python -m pytest -m "not runtime"   # the required gate: no GPU, no nativ
 uv run python -m pytest                    # with the runtime extra: everything
 ```
 
+Every pytest run is parallel by default. `pyproject.toml` sets `-n auto --dist loadgroup`
+in `addopts`, so a plain `pytest` starts one pytest-xdist worker per CPU. Tests that share an
+`xdist_group` name (the thermal guard tests) run on one worker. To debug, or to use `--pdb`,
+run serially: `uv run python -m pytest -n 0 tests/test_x.py`. One exception stays serial,
+because its suites hold a GPU lease or load a real model: the suite runner
+`ci/runner/run-suite.sh` clears `addopts`. See the comment there.
+
 `uv run ruff format src tests` is the formatter. `uv.lock` and `devenv.lock` are
 tracked, and the gate is run from the lock: never commit a hand-edited lock.
 
