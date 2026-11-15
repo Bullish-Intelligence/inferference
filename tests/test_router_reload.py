@@ -18,7 +18,6 @@ and records how the script calls the reconcile CLI. The tests prove these things
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import re
 import stat
@@ -251,11 +250,9 @@ def test_the_deadline_caps_router_calls(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def _load_cli() -> Any:
-    spec = importlib.util.spec_from_file_location("inferference_reconcile_cli_reload", CLI)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from inferference import reconcile_cli
+
+    return reconcile_cli
 
 
 def test_preset_write_is_atomic_and_leaves_no_temp_file(tmp_path: Path) -> None:

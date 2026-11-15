@@ -124,8 +124,14 @@
         ".tmuxp.yaml"
         "flake.nix"
         "flake.lock"
+        "nix/package.nix"
+        "nix/eval-check.sh"
         "docs/**"
       ];
+      # check:lint also evaluates the Nix outputs (nix/eval-check.sh), so it reads the Nix files.
+      lintUnread = builtins.filter (
+        p: !(builtins.elem p [ "flake.nix" "flake.lock" "nix/package.nix" "nix/eval-check.sh" ])
+      ) unread;
     in
     {
       "setup:sync" = {
@@ -145,9 +151,13 @@
           out="''${TESTEE_RUN_DIR:-.devenv/state}"
           mkdir -p "$out"
           set -o pipefail
+          # A stale uv.lock fails verify, before the Nix package build does.
+          uv lock --check
           uv run --no-sync ruff check . --output-format json | tee "$out/check:lint.ruff.json"
+          # Evaluate the flake outputs (packages and checks). Build nothing.
+          bash "$DEVENV_ROOT/nix/eval-check.sh"
         '';
-        input.testee.ignores = unread;
+        input.testee = { timeout_s = 300; ignores = lintUnread; };
       };
 
       "check:format" = {

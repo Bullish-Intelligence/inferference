@@ -11,22 +11,19 @@ fake home dir.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from inferference import reconcile_cli
+
 ROOT = Path(__file__).resolve().parents[1]
-RECONCILE = ROOT / "ci/runner/inferference-reconcile.py"
 EVAL_SCRIPT = ROOT / "ci/runner/evict-and-run-eval.sh"
 PAIR_SCRIPT = ROOT / "ci/runner/evict-and-run-pair.sh"
 
-SPEC = importlib.util.spec_from_file_location("inferference_reconcile_cli_evict_default", RECONCILE)
-assert SPEC and SPEC.loader
-reconciler = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(reconciler)
+reconciler = reconcile_cli
 
 _MIB = 1024 * 1024
 

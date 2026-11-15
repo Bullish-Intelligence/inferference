@@ -4,6 +4,29 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project uses [Semantic Versioning](https://semver.org/). Before 1.0, a minor
 release can break compatibility. Each break has a migration step below.
 
+## Unreleased
+
+### Added
+
+- Packaging: `flake.nix` builds the serving services as a Nix package from
+  `uv.lock` (uv2nix, `python313` from nixpkgs). Outputs: `packages.default`
+  (the wrapped launchers and tools), `packages.env` (the locked core env) and
+  `checks.package` and `checks.lock`.
+- Serving: `inferference-reconcile` and `inferference-balancer` are console
+  scripts. The reconcile logic moved to `inferference.reconcile_cli`.
+  `ci/runner/inferference-reconcile.py` stays as a thin shim for development.
+- Serving: `INFERFERENCE_RESIDENCY_PATCH` names the residency patch that the
+  router launcher checks. Without it, the launcher reads the patch beside the
+  script, then (development) `ci/build/patches/`.
+
+### Changed
+
+- Serving: the live services run from the Nix package. The checkout and the
+  library venv are for development and gates only.
+- The launchers no longer put the checkout `src/` on the Python path. They use
+  `INFERFERENCE_PYTHON`. They use the checkout venv only when it is unset.
+- Verify runs `uv lock --check` and evaluates the flake outputs.
+
 ## 0.4.1
 
 ### Added

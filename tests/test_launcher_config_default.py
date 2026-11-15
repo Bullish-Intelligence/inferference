@@ -80,14 +80,12 @@ exit 9
 
 # Runs the real CLI `preset-ini` with the fake system dir, and no system runtime dir.
 _CLI_SHIM = """
-import importlib.util
 import os
 import sys
 from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("cli_shim", os.environ["STUB_CLI"])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+from inferference import reconcile_cli as module
+
 system = Path(os.environ["STUB_SYSTEM_DIR"])
 module.SYSTEM_CONFIG_DIR = system
 module.SYSTEM_PRESET_INI = system.parent / "no-run-dir" / "models-preset.ini"
@@ -136,7 +134,6 @@ def _make_host(tmp_path: Path) -> dict[str, str]:
             "STUB_REAL_PYTHON": sys.executable,
             "STUB_SYSTEM_DIR": str(system),
             "STUB_ASK_LOG": str(logs / "ask.log"),
-            "STUB_CLI": str(ROOT / "ci/runner/inferference-reconcile.py"),
             "STUB_CLI_SHIM": str(shim),
         }
     )
@@ -319,15 +316,9 @@ def test_unit_templates_set_no_home_config_dir(template: Path) -> None:
 
 # ------------------------------------------------------- one source: the CLI ----
 def _cli_module():  # noqa: ANN202
-    import importlib.util
+    from inferference import reconcile_cli
 
-    spec = importlib.util.spec_from_file_location(
-        "cli_for_launcher_contract", ROOT / "ci/runner/inferference-reconcile.py"
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return reconcile_cli
 
 
 @pytest.mark.parametrize("case", ["writable-dir", "etc-dir", "unwritable-dir", "unset", "xdg-state"])

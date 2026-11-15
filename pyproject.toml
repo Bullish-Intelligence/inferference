@@ -54,6 +54,11 @@ runtime = [
   "llama-cpp-python==0.3.34",
 ]
 
+# Console scripts for the packaged serving services (see flake.nix).
+[project.scripts]
+inferference-reconcile = "inferference.reconcile_cli:main"
+inferference-balancer = "inferference.balancer:main"
+
 [project.urls]
 Homepage = "https://github.com/Bullish-Intelligence/inferference"
 Repository = "https://github.com/Bullish-Intelligence/inferference"

@@ -95,6 +95,7 @@ Everything goes through `uv`. There is no bare `pip` step anywhere.
 devenv shell                 # the pinned toolchain (devenv.nix is the only one)
 uv sync --all-extras         # project + runtime extra + dev group, from uv.lock
 
+uv lock --check
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check .
@@ -155,13 +156,21 @@ one child process per model. The shape is:
   for each model that should be resident. A crashed child is reported
   `unloaded` with `exit_code` set; a deliberately unloaded one has `exit_code`
   null. That difference is the health signal.
+- **The live services run from the Nix package.** `flake.nix` builds
+  `packages.default` from `uv.lock`: the launchers, `inferference-reconcile`,
+  `inferference-balancer` and `gpu-thermal-guard`. Each wrapper sets
+  `INFERFERENCE_PYTHON` (the locked core env) and `INFERFERENCE_RESIDENCY_PATCH`.
+  The checkout and the library venv are for development and gates only. A
+  launcher uses the checkout venv only when `INFERFERENCE_PYTHON` is unset. Never
+  deploy from a workspace. The reconcile logic is `inferference.reconcile_cli`;
+  `ci/runner/inferference-reconcile.py` is a thin shim for development.
 - **`systemctl reload` runs the reconcile.** `ExecReload` of the router unit is
   `ci/runner/inferference-router-reload.sh`. Both units that this repository
   ships carry it: the `systemd --user` unit that `nix/nixos-module.nix`
   generates, and the template `ci/runner/inferference-router.service.in`. A
   machine that defines its own system unit must add the same line. The script
   runs as the unit user, takes a `flock` so that two reloads cannot overlap,
-  and `exec`s `inferference-reconcile.py apply`. It exits non-zero on any
+  and `exec`s `inferference-reconcile apply`. It exits non-zero on any
   refusal or failed residency proof. A failed reload never stops the router.
   The unit user owns the preset file, so this is the way to refresh it after
   the config changes.

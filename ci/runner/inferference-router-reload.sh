@@ -50,8 +50,9 @@
 #                             reconcile CLI chooses (see its header).
 #   INFERFERENCE_PRESET_INI   the preset file the router reads. The unit sets it.
 #                             Unset: the reconcile CLI chooses, as for the launcher.
-#   INFERFERENCE_PYTHON       interpreter for the reconciler. Default the
-#                             library venv of the checkout, as the launcher.
+#   INFERFERENCE_PYTHON       interpreter for the reconciler. The Nix wrapper
+#                             always sets it. Default (development only, when
+#                             it is unset): the library venv of the checkout.
 #   INFERFERENCE_RELOAD_LOAD_TIMEOUT
 #                             the one deadline for the whole apply, in seconds.
 #                             Default 600.
@@ -77,7 +78,7 @@ python="${INFERFERENCE_PYTHON:-${repo}/ci/library/.venv/bin/python}"
 load_timeout="${INFERFERENCE_RELOAD_LOAD_TIMEOUT:-600}"
 unit_timeout="${INFERFERENCE_RELOAD_UNIT_TIMEOUT:-900}"
 
-[[ -x "$python" ]] || fail "no python at ${python}. Set \$INFERFERENCE_PYTHON, or build the router venv: ci/runner/library-venv.sh." 78
+[[ -x "$python" ]] || fail "no python at ${python}. Set \$INFERFERENCE_PYTHON, or (development) build the router venv: ci/runner/library-venv.sh." 78
 [[ -f "$reconciler" ]] || fail "no reconcile CLI at ${reconciler}." 78
 [[ "$load_timeout" =~ ^[0-9]+$ ]] || fail "INFERFERENCE_RELOAD_LOAD_TIMEOUT must be whole seconds, got '${load_timeout}'." 78
 [[ "$unit_timeout" =~ ^[0-9]+$ ]] || fail "INFERFERENCE_RELOAD_UNIT_TIMEOUT must be whole seconds, got '${unit_timeout}'." 78

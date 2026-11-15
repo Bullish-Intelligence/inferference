@@ -6,17 +6,15 @@ while the router served another one, so the budget used the wrong footprint.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "ci/runner/inferference-reconcile.py"
-SPEC = importlib.util.spec_from_file_location("inferference_reconcile_cli_config_dir", SCRIPT)
-assert SPEC and SPEC.loader
-reconciler = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(reconciler)
+from inferference import reconcile_cli
+
+reconciler: Any = reconcile_cli  # the tests pass duck-typed stand-ins
 
 WANTED = "[a]\nmodel = /m/a.gguf\nparallel = 8\n"
 STALE = "[a]\nmodel = /m/a.gguf\nparallel = 4\n"

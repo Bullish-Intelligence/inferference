@@ -44,9 +44,18 @@
 #                             asks `inferference-reconcile.py preset-ini`, the
 #                             one source of the default (see its header). The
 #                             path is never inside /etc.
-#   INFERFERENCE_SERVER_DIR   Mode A artefact dir. Default ci/modea/server/current.
-#   INFERFERENCE_PYTHON       interpreter for the reconciler. Default the
-#                             library venv.
+#   INFERFERENCE_SERVER_DIR   Mode A artefact dir. The Nix deploy sets it to the
+#                             server package. Default ci/modea/server/current
+#                             (development only).
+#   INFERFERENCE_PYTHON       interpreter for the reconciler. It needs the
+#                             `inferference` package. The Nix wrapper always sets
+#                             it. Default (development only, when it is unset):
+#                             the library venv of the checkout.
+#   INFERFERENCE_RESIDENCY_PATCH
+#                             the vulkan-residency.patch that the server must
+#                             carry. The Nix wrapper sets it. Default the file
+#                             next to this script, then (development only)
+#                             ci/build/patches/vulkan-residency.patch.
 #   INFERFERENCE_VULKAN_ICD   the RADV ICD file to check. Default
 #                             /run/opengl-driver/share/vulkan/icd.d/
 #                             radeon_icd.x86_64.json. A test sets it.
@@ -69,6 +78,8 @@ repo="$(cd "${here}/../.." && pwd)"
 _cfg() { echo "!! [inferference-router] $*" >&2; exit 78; }
 
 reconciler="${here}/inferference-reconcile.py"
+# The Nix package always sets INFERFERENCE_PYTHON. The checkout venv is a
+# development fallback only, used when the variable is unset.
 config_py="${INFERFERENCE_PYTHON:-${repo}/ci/library/.venv/bin/python}"
 
 # The config dir. An explicit $INFERFERENCE_CONFIG_DIR passes through as it is
@@ -85,7 +96,7 @@ if [[ -n "${INFERFERENCE_CONFIG_DIR:-}" ]]; then
   fi
   export INFERFERENCE_CONFIG_DIR="$config_dir"   # the CLI then reads the expanded path
 else
-  [[ -x "$config_py" ]] || _cfg "no python at ${config_py} to ask the reconcile CLI for the config dir. Set \$INFERFERENCE_CONFIG_DIR, or \$INFERFERENCE_PYTHON, or build the router venv: LIBRARY_VENV_SCOPE=router LIBRARY_BASE_PYTHON=<python in /nix/store> ci/runner/library-venv.sh."
+  [[ -x "$config_py" ]] || _cfg "no python at ${config_py} to ask the reconcile CLI for the config dir. Set \$INFERFERENCE_CONFIG_DIR, or \$INFERFERENCE_PYTHON, or (development) build the router venv: LIBRARY_VENV_SCOPE=router LIBRARY_BASE_PYTHON=<python in /nix/store> ci/runner/library-venv.sh."
   config_dir="$("$config_py" "$reconciler" config-dir)" \
     || _cfg "the reconcile CLI could not name the config dir. Set \$INFERFERENCE_CONFIG_DIR."
   [[ -n "$config_dir" ]] || _cfg "the reconcile CLI printed no config dir. Set \$INFERFERENCE_CONFIG_DIR."
@@ -98,7 +109,7 @@ fi
 if [[ -n "${INFERFERENCE_PRESET_INI:-}" ]]; then
   ini_path="$INFERFERENCE_PRESET_INI"
 else
-  [[ -x "$config_py" ]] || _cfg "no python at ${config_py} to ask the reconcile CLI for the preset path. Set \$INFERFERENCE_PRESET_INI, or \$INFERFERENCE_PYTHON, or build the router venv: LIBRARY_VENV_SCOPE=router LIBRARY_BASE_PYTHON=<python in /nix/store> ci/runner/library-venv.sh."
+  [[ -x "$config_py" ]] || _cfg "no python at ${config_py} to ask the reconcile CLI for the preset path. Set \$INFERFERENCE_PRESET_INI, or \$INFERFERENCE_PYTHON, or (development) build the router venv: LIBRARY_VENV_SCOPE=router LIBRARY_BASE_PYTHON=<python in /nix/store> ci/runner/library-venv.sh."
   ini_path="$("$config_py" "$reconciler" preset-ini)" \
     || _cfg "the reconcile CLI could not name the preset path. Set \$INFERFERENCE_PRESET_INI."
   [[ -n "$ini_path" ]] || _cfg "the reconcile CLI printed no preset path. Set \$INFERFERENCE_PRESET_INI."
@@ -113,11 +124,11 @@ fi
 [[ -f "${config_dir}/placement.yaml" ]] || _cfg "no placement at ${config_dir}/placement.yaml. See ci/runner/placement.example.yaml."
 [[ -d "${config_dir}/models" ]] || _cfg "no model configs at ${config_dir}/models. See ci/runner/model.example.yaml."
 
-[[ -x "$config_py" ]] || _cfg "no python at ${config_py} to read ${config_dir}. Set \$INFERFERENCE_PYTHON, or build the router venv: LIBRARY_VENV_SCOPE=router LIBRARY_BASE_PYTHON=<python in /nix/store> ci/runner/library-venv.sh."
+[[ -x "$config_py" ]] || _cfg "no python at ${config_py} to read ${config_dir}. Set \$INFERFERENCE_PYTHON, or (development) build the router venv: LIBRARY_VENV_SCOPE=router LIBRARY_BASE_PYTHON=<python in /nix/store> ci/runner/library-venv.sh."
 
 # --- the artefact -------------------------------------------------------------
 server_dir="${INFERFERENCE_SERVER_DIR:-${repo}/ci/modea/server/current}"
-[[ -d "$server_dir" ]] || _cfg "no Mode A server artefact at ${server_dir}. Publish one with ci/build/mode-a-server.sh."
+[[ -d "$server_dir" ]] || _cfg "no Mode A server artefact at ${server_dir}. Set \$INFERFERENCE_SERVER_DIR to the server package, or (development) publish one with ci/build/mode-a-server.sh."
 server_dir="$(cd "$server_dir" && pwd -P)"
 bin="${server_dir}/bin/llama-server"
 man="${server_dir}/build-manifest.json"
@@ -130,7 +141,16 @@ esac
 
 build_id="$("$config_py" -c "import json;print(json.load(open('${man}')).get('build_id',''))")"
 residency_patch="$("$config_py" -c "import json;print(json.load(open('${man}')).get('vulkan_residency_patch_sha256',''))")"
-expected_patch="$(sha256sum "${repo}/ci/build/patches/vulkan-residency.patch" | cut -d ' ' -f 1)"
+patch_file="${INFERFERENCE_RESIDENCY_PATCH:-}"
+if [[ -z "$patch_file" ]]; then
+  if [[ -f "${here}/vulkan-residency.patch" ]]; then
+    patch_file="${here}/vulkan-residency.patch"
+  else
+    patch_file="${repo}/ci/build/patches/vulkan-residency.patch"   # development checkout
+  fi
+fi
+[[ -f "$patch_file" ]] || _cfg "no residency patch at ${patch_file}. Set \$INFERFERENCE_RESIDENCY_PATCH."
+expected_patch="$(sha256sum "$patch_file" | cut -d ' ' -f 1)"
 [[ "$residency_patch" == "$expected_patch" ]] || _cfg "server does not carry the current residency patch"
 
 # --- the backend: Vulkan/RADV, not CUDA ---------------------------------------
@@ -178,9 +198,7 @@ fi
 echo ">> [inferference-router] $render_out"
 
 read -r host port models_max <<<"$("$config_py" -c "
-import sys
 from pathlib import Path
-sys.path.insert(0, '${repo}/src')
 from inferference.reconcile import read_config_dir
 placement, _ = read_config_dir(Path('${config_dir}'))
 print(placement.router.host, placement.router.port, placement.router.models_max)

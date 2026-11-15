@@ -82,12 +82,37 @@ devenv shell
 uv sync --all-extras
 ```
 
+## Deploy the serving services
+
+The live services run from the Nix package, never from a checkout. The checkout
+and the library venv are for development and gates only.
+
+`flake.nix` builds the package from `uv.lock` with uv2nix. The interpreter is
+`python313` from nixpkgs. The Python environment holds the core dependencies
+only, never the `runtime` extra.
+
+```bash
+nix build .#default      # bin/: inferference-router-launch, inferference-router-reload,
+                         #   inferference-balancer-launch, inferference-reconcile,
+                         #   inferference-balancer, gpu-thermal-guard
+nix flake check          # build the package and run the lock check
+```
+
+Each wrapper sets `INFERFERENCE_PYTHON` to the locked environment and
+`INFERFERENCE_RESIDENCY_PATCH` to the patch in the package. Set
+`INFERFERENCE_SERVER_DIR` to the Mode A server artefact. Set
+`INFERFERENCE_CONFIG_DIR` to the config directory. Check an install without
+a card: `inferference-router-launch --check`.
+
+Never deploy from a workspace or a checkout.
+
 ## Verify
 
 Every command runs through the uv-managed environment, so `uv sync --all-extras`
 must have run once:
 
 ```bash
+uv lock --check                                      # a stale uv.lock fails
 uv run ruff check . && uv run ruff format --check .  # lint + format
 uv run ty check .                                    # types
 uv run python -m pytest -m "not runtime"             # the required gate: no GPU, no native stack

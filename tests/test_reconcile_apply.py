@@ -12,7 +12,6 @@ resident model, even on a reload that changed nothing. The rules now are:
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,11 +19,9 @@ from typing import Any
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "ci/runner/inferference-reconcile.py"
-SPEC = importlib.util.spec_from_file_location("inferference_reconcile_cli_apply", SCRIPT)
-assert SPEC and SPEC.loader
-reconciler = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(reconciler)
+from inferference import reconcile_cli
+
+reconciler: Any = reconcile_cli  # the tests pass duck-typed stand-ins
 
 WANTED = "[a]\nmodel = /m/a.gguf\n\n[b]\nmodel = /m/b.gguf\n\n[c]\nmodel = /m/c.gguf\n"
 STALE = "[a]\nmodel = /m/a.gguf\n\n[b]\nmodel = /m/OLD.gguf\n\n[c]\nmodel = /m/c.gguf\n"
