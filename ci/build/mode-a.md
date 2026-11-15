@@ -282,6 +282,16 @@ The vulkan-loader in the store finds the driver in
 `hardware.graphics.enable` is set. Point `INFERFERENCE_SERVER_DIR` at the
 store path to use it.
 
+The flake exposes it as `packages.server`: `nix build .#server`. The check
+`server-eval` evaluates it and does not build it, so `nix flake check` stays
+fast. `packages.default` holds the services. Set `INFERFERENCE_SERVER_DIR` to
+the `.#server` output to start the router with this server.
+
+The cards of the live host are AMD Radeon Pro V620. The name `vulkan-mi25-...`
+in the profile and in the build id is a historical label from the first
+cards. It does not name the hardware. The launcher and the manifests use the
+name, so it stays the same.
+
 A Nix build runs no GPU job. Run `ci/gates/vulkan_mi25_smoke.sh --out <store
 path>` once on a free card before you make this build the live server.
 

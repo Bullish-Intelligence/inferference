@@ -43,13 +43,25 @@
           # The locked Python env: core dependencies only, never the `runtime` extra.
           env = built.env;
 
-          # SLOT packages.server: the Mode A llama-server (nix/llama-server.nix).
-          # A parallel lane adds it here. Do not add it in this change.
+          # The Mode A llama-server (nix/llama-server.nix): bin/llama-server,
+          # lib/, the manifests. Point INFERFERENCE_SERVER_DIR at this output.
+          server = pkgs.callPackage ./nix/llama-server.nix { };
         });
 
       checks = forSystems (pkgs: {
         # Build the serving package. It runs the install check of the wrappers.
         package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+
+        # Evaluate the llama-server derivation and force its store path. The
+        # check does not build it: a build compiles llama.cpp and takes long.
+        # Build it with `nix build .#server`.
+        server-eval =
+          let
+            drv = self.packages.${pkgs.stdenv.hostPlatform.system}.server;
+          in
+          pkgs.runCommand "inferference-server-eval" { } ''
+            echo ${builtins.unsafeDiscardStringContext drv.drvPath} > "$out"
+          '';
 
         # A stale uv.lock fails this check (verify runs `uv lock --check` too).
         lock = pkgs.runCommand "inferference-lock-check"
