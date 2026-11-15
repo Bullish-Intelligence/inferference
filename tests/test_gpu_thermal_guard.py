@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -581,13 +582,28 @@ def _wait_for(predicate, timeout: float = 30.0) -> bool:  # type: ignore[no-unty
     return False
 
 
-def _start_pause_worker(
-    tmp_path: Path, env: dict[str, str], body: str = "exec sleep 60"
-) -> tuple[subprocess.Popen[str], int, Path]:
+def _idle_worker(pid_file: Path) -> str:
+    """Return a bash line that runs a worker which stops on SIGINT, the way llama-server does.
+
+    The guard relays SIGINT only, as the unit's KillSignal says. A worker with no handler cannot
+    stop: bash gives every background job SIG_IGN for SIGINT, and `sleep` keeps it. Such a worker
+    made each teardown wait for the full timeout. The worker writes its pid after it installs the
+    handler, so a test cannot send a stop signal too early.
+    """
+    code = (
+        "import os, signal, sys\n"
+        "signal.signal(signal.SIGINT, lambda *_: sys.exit(0))\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "while True:\n    signal.pause()\n"
+    )
+    return f"exec {shlex.quote(sys.executable)} -I -c {shlex.quote(code)}"
+
+
+def _start_pause_worker(tmp_path: Path, env: dict[str, str]) -> tuple[subprocess.Popen[str], int, Path]:
     """Run a worker under `run --on-limit pause`. Return the guard, the worker pid, and the log."""
     pid_file = tmp_path / "worker.pid"
     target = tmp_path / "worker.sh"
-    target.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$BASHPID\" > {pid_file}\n{body}\n")
+    target.write_text(f"#!/usr/bin/env bash\n{_idle_worker(pid_file)}\n")
     target.chmod(0o755)
     log = tmp_path / "guard.log"
     process = subprocess.Popen(
@@ -608,16 +624,20 @@ def _status(tmp_path: Path) -> str:
 
 
 def _finish(process: subprocess.Popen[str], pid: int) -> None:
+    """Stop the guard with SIGTERM. A guard that does not exit in 10 s is a real stop bug."""
+    stuck = False
     if process.poll() is None:
         process.send_signal(signal.SIGTERM)
         try:
-            process.wait(timeout=30)
+            process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             process.kill()
+            stuck = True
     try:
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    assert not stuck, "the guard did not exit within 10 s of SIGTERM"
 
 
 def test_pause_mode_freezes_at_the_limit_and_resumes_after_the_hold(tmp_path: Path) -> None:
@@ -773,7 +793,7 @@ def test_pause_mode_waits_for_a_safe_start_with_no_time_limit(tmp_path: Path) ->
     _set_temp(hwmon, 80)  # over the resume mark, under the limit
     pid_file = tmp_path / "worker.pid"
     target = tmp_path / "worker.sh"
-    target.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$BASHPID\" > {pid_file}\nexec sleep 60\n")
+    target.write_text(f"#!/usr/bin/env bash\n{_idle_worker(pid_file)}\n")
     target.chmod(0o755)
     log = tmp_path / "guard.log"
     process = subprocess.Popen(
@@ -817,7 +837,7 @@ def test_default_mode_still_kills_at_the_limit(tmp_path: Path) -> None:
     env["GPU_THERMAL_HARD_C"] = "90"
     pid_file = tmp_path / "worker.pid"
     target = tmp_path / "worker.sh"
-    target.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$BASHPID\" > {pid_file}\nexec sleep 60\n")
+    target.write_text(f"#!/usr/bin/env bash\n{_idle_worker(pid_file)}\n")
     target.chmod(0o755)
     process = subprocess.Popen(
         [str(GUARD), "run", "--", "bash", str(target)],

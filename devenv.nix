@@ -180,14 +180,15 @@
       };
 
       "test:full" = {
-        # About 4 min warm: five thermal guard tests take about 30 s each. The default limit of
-        # 300 s was too tight. The `runtime` marker names the 3 tests that import the native stack.
+        # About 4.4 min warm on a busy host (1400 tests; the slowest takes under 10 s). The default
+        # limit of 300 s is too tight. The `runtime` marker names the 3 tests that import the
+        # native stack.
         exec = ''
           out="''${TESTEE_RUN_DIR:-.devenv/state}"
           mkdir -p "$out"
           uv run --no-sync python -m pytest -m "not runtime" --junitxml="$out/test:full.junit.xml"
         '';
-        input.testee = { timeout_s = 600; ignores = unread; };
+        input.testee = { timeout_s = 520; ignores = unread; };
       };
 
       # The whole suite and the type check in the native library venv. It builds llama-cpp-python
@@ -207,12 +208,17 @@
         input.testee = { timeout_s = 3600; ignores = unread; };
       };
 
+      # devman entry tasks. Testee does not run these; it runs the checks itself, after one
+      # setup phase. A setup task may not sit in a check's `after`, so the entry task depends on
+      # setup and then runs the checks. That order syncs the venv before `ty` reads it.
       "base:check" = {
-        after = [ "check:lint" "check:format" "check:types" ];
+        after = [ "setup:sync" ];
+        exec = "devenv tasks run check:lint check:format check:types";
         input.testee.ignores = unread;
       };
       "base:test" = {
-        after = [ "test:full" ];
+        after = [ "setup:sync" ];
+        exec = "devenv tasks run test:full";
         input.testee.ignores = unread;
       };
     };
